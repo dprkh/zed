@@ -244,6 +244,9 @@ pub struct SettingsContent {
     /// The settings for the markdown preview.
     pub markdown_preview: Option<MarkdownPreviewSettingsContent>,
 
+    /// Native Typst compiler and editor settings.
+    pub typst: Option<TypstSettingsContent>,
+
     pub repl: Option<ReplSettingsContent>,
 
     /// Whether or not to enable Helix mode.
@@ -407,7 +410,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
         call_hierarchy, command_palette, file_finder, git_panel, tabs, tab_bar, status_bar, preview_tabs, agent,
         agent_servers, audio, auto_update, base_keymap, collaboration_panel, debugger, diagnostics,
         git,
-        global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
+        global_lsp_settings, image_viewer, markdown_preview, typst, repl, helix_mode, hide_mouse,
         journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
         title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
@@ -1643,4 +1646,17 @@ impl std::str::FromStr for DelayMs {
             .map(DelayMs)
             .with_context(|| format!("failed to parse delay duration: {s}"))
     }
+}
+
+#[with_fallible_options]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct TypstSettingsContent {
+    /// Compiler root, relative to the worktree root.
+    pub root: Option<std::path::PathBuf>,
+    /// Default preview entry, relative to the compiler root.
+    pub main_file: Option<std::path::PathBuf>,
+    pub font_paths: Option<Vec<std::path::PathBuf>>,
+    pub inputs: Option<BTreeMap<String, String>>,
+    pub system_fonts: Option<bool>,
+    pub package_downloads: Option<bool>,
 }

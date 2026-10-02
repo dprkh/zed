@@ -3,12 +3,14 @@ use gpui::{AnyElement, Entity, Modifiers};
 use markdown_preview::markdown_preview_view::MarkdownPreviewView;
 use svg_preview::svg_preview_view::SvgPreviewView;
 use tabular_data_preview::TabularDataPreviewPane;
+use typst_preview::TypstPreview;
 use ui::{Tooltip, prelude::*, text_for_keystroke};
 
 use super::QuickActionBar;
 
 enum PreviewTarget {
     Markdown(Entity<Editor>),
+    Typst(Entity<Editor>),
     Svg(Entity<MultiBuffer>),
     TabularData(Entity<Editor>),
 }
@@ -25,6 +27,10 @@ impl QuickActionBar {
             && MarkdownPreviewView::is_markdown_file(editor, cx)
         {
             PreviewTarget::Markdown(editor.clone())
+        } else if let Some(editor) = &editor
+            && TypstPreview::is_typst_file(editor, cx)
+        {
+            PreviewTarget::Typst(editor.clone())
         } else if let Some(buffer) = active_item.act_as::<MultiBuffer>(cx)
             && SvgPreviewView::is_svg_file(&buffer, cx)
         {
@@ -42,6 +48,11 @@ impl QuickActionBar {
                 "toggle-markdown-preview",
                 "Preview Markdown",
                 &markdown_preview::OpenPreview as &dyn gpui::Action,
+            ),
+            PreviewTarget::Typst(_) => (
+                "toggle-typst-preview",
+                "Preview Typst",
+                &typst_preview::OpenPreview as &dyn gpui::Action,
             ),
             PreviewTarget::Svg(_) => (
                 "toggle-svg-preview",
@@ -96,6 +107,18 @@ impl QuickActionBar {
                                     );
                                 } else {
                                     MarkdownPreviewView::open_preview_in_pane(
+                                        workspace, editor, pane, window, cx,
+                                    );
+                                }
+                            }
+                            PreviewTarget::Typst(editor) => {
+                                let editor = editor.clone();
+                                if open_to_the_side {
+                                    TypstPreview::open_preview_to_the_side_of_pane(
+                                        workspace, editor, pane, window, cx,
+                                    );
+                                } else {
+                                    TypstPreview::open_preview_in_pane(
                                         workspace, editor, pane, window, cx,
                                     );
                                 }

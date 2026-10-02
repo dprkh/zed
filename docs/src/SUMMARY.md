@@ -178,6 +178,7 @@
 - [Terraform](./languages/terraform.md)
 - [TOML](./languages/toml.md)
 - [TypeScript](./languages/typescript.md)
+- [Typst](./languages/typst.md)
 - [Uiua](./languages/uiua.md)
 - [Vue](./languages/vue.md)
 - [XML](./languages/xml.md)

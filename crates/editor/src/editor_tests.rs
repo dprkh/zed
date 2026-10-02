@@ -18977,6 +18977,142 @@ async fn test_save_actions_are_hidden_for_read_only_files(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+async fn test_native_typst_save_preserves_cursor_and_scroll(cx: &mut TestAppContext) {
+    init_test(cx, |settings| {
+        settings.defaults.format_on_save = Some(FormatOnSave::Off);
+    });
+    cx.update(|cx| {
+        let mut settings = project::typst_store::TypstSettings::default();
+        settings.0.system_fonts = false;
+        settings.0.package_downloads = false;
+        project::typst_store::TypstSettings::override_global(settings, cx);
+    });
+    let source = format!(
+        "#let first=1\n{}#let last=2\n",
+        (1..100)
+            .map(|row| format!("Line {row} with unchanged text.\n"))
+            .collect::<String>()
+    );
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/typst"), json!({"main.typ": source}))
+        .await;
+    let project = Project::test(fs.clone(), [path!("/typst").as_ref()], cx).await;
+    project
+        .read_with(cx, |project, _| project.languages().clone())
+        .add(Arc::new(language::Language::new(
+            LanguageConfig {
+                name: "Typst".into(),
+                matcher: LanguageMatcher {
+                    path_suffixes: vec!["typ".into()],
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            },
+            None,
+        )));
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/typst/main.typ"), cx)
+        })
+        .await
+        .unwrap();
+    let (editor, cx) = cx.add_window_view(|window, cx| {
+        Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx)
+    });
+    editor.update_in(cx, |editor, window, cx| {
+        editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+            selections.select_ranges([Point::new(12, 5)..Point::new(12, 5)])
+        });
+        editor.set_scroll_position(gpui::Point::new(0., 8.), window, cx);
+    });
+    cx.run_until_parked();
+    let scroll = editor.update(cx, |editor, cx| editor.scroll_position(cx));
+    assert_eq!(scroll.y, 8.);
+    for format_on_save in [FormatOnSave::Off, FormatOnSave::On] {
+        update_test_language_settings(cx, &|settings| {
+            settings.defaults.format_on_save = Some(format_on_save);
+        });
+        editor
+            .update_in(cx, |editor, window, cx| {
+                Item::save(
+                    editor,
+                    SaveOptions {
+                        format: true,
+                        force_format: false,
+                        autosave: false,
+                    },
+                    project.clone(),
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        editor.update(cx, |editor, cx| {
+            let selections = editor.selections.all::<Point>(&editor.display_snapshot(cx));
+            assert_eq!(selections[0].range(), Point::new(12, 5)..Point::new(12, 5));
+            assert_eq!(editor.scroll_position(cx), scroll);
+            assert!(!editor.is_dirty(cx));
+        });
+        let text = fs.load(path!("/typst/main.typ").as_ref()).await.unwrap();
+        if format_on_save == FormatOnSave::Off {
+            assert_eq!(text, source);
+        } else {
+            assert!(text.starts_with("#let first = 1\n"));
+            assert!(text.ends_with("#let last = 2\n"));
+        }
+    }
+    let version = buffer.read_with(cx, |buffer, _| buffer.version());
+    editor
+        .update_in(cx, |editor, window, cx| {
+            Item::save(
+                editor,
+                SaveOptions {
+                    format: true,
+                    force_format: false,
+                    autosave: false,
+                },
+                project.clone(),
+                window,
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(buffer.read_with(cx, |buffer, _| buffer.version()), version);
+    editor.update_in(cx, |editor, window, cx| {
+        editor.undo(&Default::default(), window, cx)
+    });
+    assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), source);
+    update_test_language_settings(cx, &|settings| {
+        settings.defaults.format_on_save = Some(FormatOnSave::Off);
+    });
+    editor
+        .update_in(cx, |editor, window, cx| {
+            Item::save(
+                editor,
+                SaveOptions {
+                    format: true,
+                    force_format: true,
+                    autosave: false,
+                },
+                project,
+                window,
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+    assert!(
+        buffer
+            .read_with(cx, |buffer, _| buffer.text())
+            .starts_with("#let first = 1\n")
+    );
+}
+
+#[gpui::test]
 async fn test_document_format_during_save(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
 

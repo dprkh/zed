@@ -1,0 +1,18 @@
+[package]
+name = "tree_sitter_typst"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "MIT"
+
+[lib]
+path = "src/tree_sitter_typst.rs"
+
+[dependencies]
+tree-sitter-language.workspace = true
+
+[build-dependencies]
+cc.workspace = true
+
+[dev-dependencies]
+tree-sitter.workspace = true

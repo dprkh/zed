@@ -156,7 +156,8 @@ impl DiagnosticIndicator {
                 cx.notify();
             }
 
-            project::Event::DiagnosticsUpdated { .. } => {
+            project::Event::DiagnosticsUpdated { .. }
+            | project::Event::NativeDiagnosticsUpdated { .. } => {
                 this.diagnostic_summary_update = cx.spawn(async move |this, cx| {
                     cx.background_executor()
                         .timer(Duration::from_millis(30))

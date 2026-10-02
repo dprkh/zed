@@ -2885,8 +2885,9 @@ impl LspCommand for GetSignatureHelp {
         _: &mut App,
     ) -> proto::GetSignatureHelpResponse {
         proto::GetSignatureHelpResponse {
-            signature_help: response
-                .map(|signature_help| lsp_to_proto_signature(signature_help.original_data)),
+            signature_help: response.and_then(|signature_help| {
+                signature_help.original_data.map(lsp_to_proto_signature)
+            }),
         }
     }
 

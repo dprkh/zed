@@ -127,6 +127,7 @@ pub struct Buffer {
     parse_status: (watch::Sender<ParseStatus>, watch::Receiver<ParseStatus>),
     non_text_state_update_count: usize,
     diagnostics: TreeMap<LanguageServerId, DiagnosticSet>,
+    native_diagnostics: Option<DiagnosticSet>,
     remote_selections: TreeMap<ReplicaId, SelectionSet>,
     diagnostics_timestamp: clock::Lamport,
     completion_triggers: BTreeSet<String>,
@@ -197,6 +198,7 @@ pub struct BufferSnapshot {
     pub(crate) syntax: SyntaxSnapshot,
     tree_sitter_data: Arc<TreeSitterData>,
     diagnostics: TreeMap<LanguageServerId, DiagnosticSet>,
+    native_diagnostics: Option<DiagnosticSet>,
     remote_selections: TreeMap<ReplicaId, SelectionSet>,
     language: Option<Arc<Language>>,
     file: Option<Arc<dyn File>>,
@@ -1181,6 +1183,7 @@ impl Buffer {
             content_language_detection_enabled: false,
             remote_selections: Default::default(),
             diagnostics: Default::default(),
+            native_diagnostics: None,
             diagnostics_timestamp: Lamport::MIN,
             completion_triggers: Default::default(),
             completion_triggers_per_language_server: Default::default(),
@@ -1247,6 +1250,7 @@ impl Buffer {
                 syntax,
                 file: None,
                 diagnostics: Default::default(),
+                native_diagnostics: None,
                 remote_selections: Default::default(),
                 tree_sitter_data: Arc::new(tree_sitter_data),
                 language,
@@ -1276,6 +1280,7 @@ impl Buffer {
             tree_sitter_data: Arc::new(tree_sitter_data),
             file: None,
             diagnostics: Default::default(),
+            native_diagnostics: None,
             remote_selections: Default::default(),
             language: None,
             non_text_state_update_count: 0,
@@ -1308,6 +1313,7 @@ impl Buffer {
             tree_sitter_data: Arc::new(tree_sitter_data),
             file: None,
             diagnostics: Default::default(),
+            native_diagnostics: None,
             remote_selections: Default::default(),
             language,
             non_text_state_update_count: 0,
@@ -1341,6 +1347,7 @@ impl Buffer {
             file: self.file.clone(),
             remote_selections: self.remote_selections.clone(),
             diagnostics: self.diagnostics.clone(),
+            native_diagnostics: self.native_diagnostics.clone(),
             language: self.language.clone(),
             non_text_state_update_count: self.non_text_state_update_count,
             capability: self.capability,
@@ -2063,6 +2070,17 @@ impl Buffer {
         self.send_operation(op, true, cx);
     }
 
+    pub fn update_native_diagnostics(
+        &mut self,
+        diagnostics: Option<DiagnosticSet>,
+        cx: &mut Context<Self>,
+    ) {
+        self.native_diagnostics = diagnostics;
+        self.non_text_state_update_count += 1;
+        cx.notify();
+        cx.emit(BufferEvent::DiagnosticsUpdated);
+    }
+
     pub fn buffer_diagnostics(
         &self,
         for_server: Option<LanguageServerId>,
@@ -2076,6 +2094,7 @@ impl Buffer {
                 .diagnostics
                 .iter()
                 .flat_map(|(_, diagnostic_set)| diagnostic_set.iter())
+                .chain(self.native_diagnostics.iter().flat_map(|set| set.iter()))
                 .collect(),
         }
     }
@@ -5374,6 +5393,10 @@ impl BufferSnapshot {
     /// Returns if the buffer contains any diagnostics.
     pub fn has_diagnostics(&self) -> bool {
         !self.diagnostics.is_empty()
+            || self
+                .native_diagnostics
+                .as_ref()
+                .is_some_and(|set| !set.is_empty())
     }
 
     /// Returns all the diagnostics intersecting the given range.
@@ -5400,8 +5423,40 @@ impl BufferSnapshot {
     where
         T: 'a + Clone + ToOffset,
     {
-        self.diagnostic_entries_in_range_with_server_id(search_range, reversed)
+        let mut server_entries = self
+            .diagnostic_entries_in_range_with_server_id(search_range.clone(), reversed)
             .map(|(_, entry)| entry)
+            .peekable();
+        let mut native_entries = self
+            .native_diagnostics
+            .iter()
+            .flat_map(move |set| set.entries_in_range(search_range.clone(), self, true, reversed))
+            .peekable();
+        std::iter::from_fn(
+            move || match (server_entries.peek(), native_entries.peek()) {
+                (Some(left), Some(right)) => {
+                    let ordering = left
+                        .range
+                        .start
+                        .cmp(&right.range.start, self)
+                        .then(left.diagnostic.severity.cmp(&right.diagnostic.severity))
+                        .then(left.diagnostic.group_id.cmp(&right.diagnostic.group_id));
+                    let ordering = if reversed {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    };
+                    if ordering.is_le() {
+                        server_entries.next()
+                    } else {
+                        native_entries.next()
+                    }
+                }
+                (Some(_), None) => server_entries.next(),
+                (None, Some(_)) => native_entries.next(),
+                (None, None) => None,
+            },
+        )
     }
 
     /// Returns the stored entries that intersect the given range along with the
@@ -5455,16 +5510,19 @@ impl BufferSnapshot {
     pub fn diagnostic_groups(
         &self,
         language_server_id: Option<LanguageServerId>,
-    ) -> Vec<(LanguageServerId, DiagnosticGroup<'_, Anchor>)> {
+    ) -> Vec<(Option<LanguageServerId>, DiagnosticGroup<'_, Anchor>)> {
         let mut groups = Vec::new();
 
         if let Some(language_server_id) = language_server_id {
             if let Some(set) = self.diagnostics.get(&language_server_id) {
-                set.groups(language_server_id, &mut groups, self);
+                set.groups(Some(language_server_id), &mut groups, self);
             }
         } else {
             for (language_server_id, diagnostics) in self.diagnostics.iter() {
-                diagnostics.groups(*language_server_id, &mut groups, self);
+                diagnostics.groups(Some(*language_server_id), &mut groups, self);
+            }
+            if let Some(diagnostics) = &self.native_diagnostics {
+                diagnostics.groups(None, &mut groups, self);
             }
         }
 
@@ -5488,6 +5546,11 @@ impl BufferSnapshot {
         self.diagnostics
             .iter()
             .flat_map(move |(_, set)| set.group(group_id, self))
+            .chain(
+                self.native_diagnostics
+                    .iter()
+                    .flat_map(move |set| set.group(group_id, self)),
+            )
     }
 
     /// An integer version number that accounts for all updates besides
@@ -5627,6 +5690,7 @@ impl Clone for BufferSnapshot {
             file: self.file.clone(),
             remote_selections: self.remote_selections.clone(),
             diagnostics: self.diagnostics.clone(),
+            native_diagnostics: self.native_diagnostics.clone(),
             language: self.language.clone(),
             tree_sitter_data: self.tree_sitter_data.clone(),
             non_text_state_update_count: self.non_text_state_update_count,

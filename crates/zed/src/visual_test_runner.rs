@@ -35,6 +35,10 @@
 //!   UPDATE_BASELINE - Set to update baseline images instead of comparing
 //!   VISUAL_TEST_OUTPUT_DIR - Directory to save test output (default: target/visual_tests)
 
+#[cfg(target_os = "macos")]
+#[path = "zed/quick_action_bar.rs"]
+mod quick_action_bar;
+
 // Stub main for non-macOS platforms
 #[cfg(not(target_os = "macos"))]
 fn main() {
@@ -103,8 +107,8 @@ use {
     feature_flags::FeatureFlagAppExt as _,
     git_ui::project_diff::ProjectDiff,
     gpui::{
-        App, AppContext as _, Bounds, Entity, KeyBinding, Modifiers, VisualTestAppContext,
-        WindowBounds, WindowHandle, WindowOptions, point, px, size,
+        Action as _, App, AppContext as _, Bounds, Entity, Focusable as _, KeyBinding, Modifiers,
+        VisualTestAppContext, WindowBounds, WindowHandle, WindowOptions, point, px, size,
     },
     image::RgbaImage,
     project::{AgentId, Project},
@@ -118,6 +122,7 @@ use {
         sync::Arc,
         time::Duration,
     },
+    theme::ActiveTheme as _,
     util::ResultExt as _,
     workspace::{AppState, MultiWorkspace, Workspace},
     zed_actions::OpenSettingsAt,
@@ -173,16 +178,41 @@ fn run_visual_tests(project_path: PathBuf, update_baseline: bool) -> Result<()> 
         AppState::set_global(app_state.clone(), cx);
     });
 
+    cx.update(|cx| {
+        cx.set_global(db::AppDatabase::test_new());
+        if std::env::var_os("TYPST_VISUAL_TEST_ONLY").is_some() {
+            languages::init(
+                app_state.languages.clone(),
+                app_state.fs.clone(),
+                app_state.node_runtime.clone(),
+                cx,
+            );
+            let mut settings = project::typst_store::TypstSettings::get_global(cx).clone();
+            settings.0.system_fonts = false;
+            settings.0.package_downloads = false;
+            project::typst_store::TypstSettings::override_global(settings, cx);
+        }
+    });
+
     // Initialize all Zed subsystems
     cx.update(|cx| {
         gpui_tokio::init(cx);
-        theme_settings::init(theme::LoadThemes::JustBase, cx);
+        let themes = if std::env::var_os("TYPST_VISUAL_TEST_ONLY").is_some() {
+            theme::LoadThemes::All(Box::new(Assets))
+        } else {
+            theme::LoadThemes::JustBase
+        };
+        theme_settings::init(themes, cx);
+        if std::env::var_os("TYPST_VISUAL_TEST_ONLY").is_some() {
+            app_state.languages.set_theme(cx.theme().clone());
+        }
         client::init(&app_state.client, cx);
         audio::init(cx);
         workspace::init(app_state.clone(), cx);
         release_channel::init(semver::Version::new(0, 0, 0), cx);
         command_palette::init(cx);
         editor::init(cx);
+        typst_preview::init(cx);
         call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
         title_bar::init(cx);
         project_panel::init(cx);
@@ -242,6 +272,16 @@ fn run_visual_tests(project_path: PathBuf, update_baseline: bool) -> Result<()> 
             },
             cx,
         );
+        if std::env::var_os("TYPST_VISUAL_TEST_ONLY").is_some() {
+            repl::init(app_state.fs.clone(), cx);
+            cx.bind_keys(
+                settings::KeymapFile::load_asset_allow_partial_failure(
+                    "keymaps/default-macos.json",
+                    cx,
+                )
+                .expect("Unable to load the default macOS keymap"),
+            );
+        }
     });
 
     // Run until all initialization tasks complete
@@ -342,6 +382,10 @@ fn run_visual_tests(project_path: PathBuf, update_baseline: bool) -> Result<()> 
         .log_err();
 
     cx.run_until_parked();
+
+    if std::env::var_os("TYPST_VISUAL_TEST_ONLY").is_some() {
+        return run_typst_visual_tests(workspace_window, &mut cx, update_baseline);
+    }
 
     // Open main.rs in the editor
     let open_file_task = workspace_window
@@ -835,7 +879,245 @@ fn pixels_are_similar(a: &image::Rgba<u8>, b: &image::Rgba<u8>) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+fn draw_typst_visual_frames(
+    window: gpui::AnyWindowHandle,
+    cx: &mut VisualTestAppContext,
+) -> Result<()> {
+    for _ in 0..4 {
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))?;
+        cx.run_until_parked();
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn update_typst_visual_workspace<R>(
+    workspace: &Entity<Workspace>,
+    window: gpui::AnyWindowHandle,
+    cx: &mut VisualTestAppContext,
+    update: impl FnOnce(&mut Workspace, &mut gpui::Window, &mut gpui::Context<Workspace>) -> R,
+) -> Result<R> {
+    cx.update_window(window, |_, window, cx| {
+        workspace.update(cx, |workspace, cx| update(workspace, window, cx))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn run_typst_visual_tests(
+    window: WindowHandle<Workspace>,
+    cx: &mut VisualTestAppContext,
+    update_baseline: bool,
+) -> Result<()> {
+    let workspace = window.update(cx, |_, _, cx| cx.entity())?;
+    let window: gpui::AnyWindowHandle = window.into();
+    cx.update_window(window, |_, window, cx| {
+        window.replace_root(cx, |window, cx| {
+            MultiWorkspace::new(workspace.clone(), window, cx)
+        });
+    })?;
+    let task = update_typst_visual_workspace(&workspace, window, cx, |workspace, window, cx| {
+        let worktree = workspace
+            .project()
+            .read(cx)
+            .worktrees(cx)
+            .next()
+            .context("Missing visual test worktree")?;
+        let path = project::ProjectPath {
+            worktree_id: worktree.read(cx).id(),
+            path: util::rel_path::rel_path("main.typ").into(),
+        };
+        anyhow::Ok(workspace.open_path(path, None, true, window, cx))
+    })??;
+    cx.background_executor.allow_parking();
+    let item = cx.foreground_executor.block_test(task)?;
+    cx.background_executor.forbid_parking();
+    let editor = item
+        .downcast::<editor::Editor>()
+        .context("Missing Typst editor")?;
+    update_typst_visual_workspace(&workspace, window, cx, |workspace, window, cx| {
+        let toolbar = workspace.active_pane().read(cx).toolbar().clone();
+        let search_bar = cx.new(|cx| {
+            search::BufferSearchBar::new(
+                Some(workspace.project().read(cx).languages().clone()),
+                window,
+                cx,
+            )
+        });
+        let quick_action_bar =
+            cx.new(|cx| quick_action_bar::QuickActionBar::new(search_bar.clone(), workspace, cx));
+        toolbar.update(cx, |toolbar, cx| {
+            toolbar.add_item(search_bar, window, cx);
+            toolbar.add_item(quick_action_bar, window, cx);
+        });
+        workspace.active_pane().update(cx, |pane, cx| {
+            let index = pane
+                .index_for_item(&editor)
+                .expect("Typst editor missing from pane");
+            pane.activate_item(index, true, true, window, cx);
+        });
+        window.refresh();
+    })?;
+    cx.run_until_parked();
+    draw_typst_visual_frames(window, cx)?;
+    update_typst_visual_workspace(&workspace, window, cx, |workspace, window, cx| {
+        anyhow::ensure!(
+            workspace.active_item_as::<editor::Editor>(cx).is_some(),
+            "No active source editor"
+        );
+        anyhow::ensure!(
+            window
+                .available_actions(cx)
+                .iter()
+                .any(|action| action.name() == "typst::OpenPreviewToTheSide"),
+            "Typst preview command missing from the action tree"
+        );
+        anyhow::Ok(())
+    })??;
+    run_visual_test("typst_native_preview_button", window, cx, update_baseline)?;
+    cx.simulate_keystrokes(window, "cmd-k v");
+    cx.run_until_parked();
+    cx.advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    let preview = update_typst_visual_workspace(&workspace, window, cx, |workspace, _, cx| {
+        workspace.panes().iter().find_map(|pane| {
+            pane.read(cx)
+                .items_of_type::<typst_preview::TypstPreview>()
+                .next()
+        })
+    })?
+    .context("Native preview did not open")?;
+    let compilation =
+        update_typst_visual_workspace(&workspace, window, cx, |workspace, _, cx| {
+            workspace.project().update(cx, |project, cx| {
+                let buffer = editor
+                    .read(cx)
+                    .buffer()
+                    .read(cx)
+                    .as_singleton()
+                    .context("Missing Typst buffer")?;
+                let request = project.typst_request(&buffer, cx)?;
+                project
+                    .typst_store(cx)
+                    .read(cx)
+                    .pages(&request.input.entry)
+                    .context("Typst preview did not compile")
+            })
+        })??;
+    anyhow::ensure!(
+        compilation.page_sizes().len() == 2,
+        "Expected two rendered Typst pages"
+    );
+    draw_typst_visual_frames(window, cx)?;
+    run_visual_test("typst_native_preview", window, cx, update_baseline)?;
+    let buffer = editor
+        .read_with(cx, |editor, cx| editor.buffer().read(cx).as_singleton())
+        .context("Missing Typst source buffer")?;
+    buffer.update(cx, |buffer, cx| {
+        let start = buffer.text().find("compile directly").unwrap();
+        buffer.edit([(start..start + 16, "update smoothly")], None, cx)
+    });
+    cx.run_until_parked();
+    cx.advance_clock(Duration::from_millis(25));
+    cx.run_until_parked();
+    draw_typst_visual_frames(window, cx)?;
+    run_visual_test("typst_native_preview_edited", window, cx, update_baseline)?;
+    update_typst_visual_workspace(&workspace, window, cx, |_, window, cx| {
+        preview.focus_handle(cx).focus(window, cx);
+        window.dispatch_action(zed_actions::preview::typst::ZoomIn.boxed_clone(), cx);
+        window.dispatch_action(zed_actions::preview::typst::NextPage.boxed_clone(), cx);
+    })?;
+    draw_typst_visual_frames(window, cx)?;
+    run_visual_test("typst_native_preview_zoom", window, cx, update_baseline)?;
+    update_typst_visual_workspace(&workspace, window, cx, |workspace, window, cx| {
+        workspace.resize_pane(gpui::Axis::Horizontal, px(-120.0), window, cx);
+    })?;
+    draw_typst_visual_frames(window, cx)?;
+    run_visual_test("typst_native_preview_resized", window, cx, update_baseline)?;
+    buffer.update(cx, |buffer, cx| {
+        buffer.edit([(0..0, "#unknown_variable\n")], None, cx)
+    });
+    cx.run_until_parked();
+    cx.advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    draw_typst_visual_frames(window, cx)?;
+    run_visual_test("typst_native_preview_error", window, cx, update_baseline)?;
+    update_typst_visual_workspace(&workspace, window, cx, |workspace, _, cx| {
+        anyhow::ensure!(
+            workspace
+                .project()
+                .read(cx)
+                .diagnostic_summary(false, cx)
+                .error_count
+                > 0,
+            "Native error missing from project diagnostics"
+        );
+        anyhow::Ok(())
+    })??;
+    buffer.update(cx, |buffer, cx| {
+        buffer.edit([(0.."#unknown_variable".len(), "#tex")], None, cx)
+    });
+    update_typst_visual_workspace(&workspace, window, cx, |workspace, window, cx| {
+        if let Some(pane) = workspace.pane_for(&editor) {
+            pane.update(cx, |pane, cx| {
+                if let Some(index) = pane.index_for_item(&editor) {
+                    pane.activate_item(index, true, true, window, cx);
+                }
+            });
+        }
+        editor.update(cx, |editor, cx| {
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([language::Point::new(0, 4)..language::Point::new(0, 4)])
+            });
+        });
+        window.dispatch_action(editor::actions::ShowCompletions.boxed_clone(), cx);
+    })?;
+    cx.run_until_parked();
+    draw_typst_visual_frames(window, cx)?;
+    anyhow::ensure!(
+        editor.read_with(cx, |editor, _| editor.has_visible_completions_menu()),
+        "Native Typst completions did not reach the editor menu"
+    );
+    run_visual_test("typst_native_completion", window, cx, update_baseline)?;
+    update_typst_visual_workspace(&workspace, window, cx, |_, window, cx| {
+        window.dispatch_action(
+            editor::actions::ConfirmCompletion::default().boxed_clone(),
+            cx,
+        );
+    })?;
+    cx.run_until_parked();
+    anyhow::ensure!(
+        buffer.read_with(cx, |buffer, _| buffer.text().starts_with("#text(")),
+        "Native Typst function completion did not insert its snippet"
+    );
+    println!("Native Typst preview visual checks passed");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn create_test_files(project_path: &Path) {
+    std::fs::write(
+        project_path.join("main.typ"),
+        r##"#set page(width: 150mm, height: 185mm, margin: 18mm)
+#set text(size: 12pt)
+#set heading(numbering: "1.")
+= Native Typst in Zed <intro>
+
+Edits compile directly in Zed. The page preview is a native GPUI pane.
+
+#let accent = rgb("#5e81ac")
+#text(fill: accent, weight: "bold")[Syntax, completion, and live pages]
+
+$ integral_0^1 x^2 dif x = 1/3 $
+
+#table(columns: (1fr, 1fr), [Editor], [Preview], [Unsaved source], [Native pages])
+
+#pagebreak()
+= A second page
+
+Return to @intro. Click a word in the preview to jump to its source.
+"##,
+    )
+    .expect("Failed to write Typst visual fixture");
     // Create src directory
     let src_dir = project_path.join("src");
     std::fs::create_dir_all(&src_dir).expect("Failed to create src directory");

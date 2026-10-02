@@ -1537,7 +1537,11 @@ impl CompletionProvider for Entity<Project> {
             return true;
         }
 
-        buffer.completion_triggers().contains(text)
+        (buffer
+            .language()
+            .is_some_and(|language| language.name().as_ref() == "Typst")
+            && matches!(char, '#' | '.' | ':' | '@' | '<' | '"' | '/'))
+            || buffer.completion_triggers().contains(text)
     }
 
     fn show_snippets(&self) -> bool {

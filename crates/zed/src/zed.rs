@@ -6135,6 +6135,103 @@ mod tests {
         cx.run_until_parked();
     }
 
+    #[gpui::test]
+    async fn test_typst_preview_eye_button(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(db::AppDatabase::test_new());
+            Assets.load_test_fonts(cx);
+        });
+        let app_state = init_test(cx);
+        cx.update(|cx| {
+            typst_preview::init(cx);
+            let mut settings = project::typst_store::TypstSettings::default();
+            settings.0.system_fonts = false;
+            settings.0.package_downloads = false;
+            project::typst_store::TypstSettings::override_global(settings, cx);
+        });
+        let filesystem = app_state.fs.as_fake();
+        filesystem
+            .insert_tree(path!("/typst"), json!({"main.typ": "A native preview"}))
+            .await;
+        app_state.languages.add(Arc::new(language::Language::new(
+            language::LanguageConfig {
+                name: "Typst".into(),
+                matcher: language::LanguageMatcher {
+                    path_suffixes: vec!["typ".into()],
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            },
+            None,
+        )));
+        let project = Project::test(app_state.fs.clone(), [path!("/typst").as_ref()], cx).await;
+        project
+            .read_with(cx, |project, _| project.languages().clone())
+            .add(
+                app_state
+                    .languages
+                    .language_for_name("Typst")
+                    .await
+                    .unwrap(),
+            );
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer(path!("/typst/main.typ"), cx)
+            })
+            .await
+            .unwrap();
+        let (root, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = root.read_with(cx, |root, _| root.workspace().clone());
+        let (editor, source_pane) = workspace.update_in(cx, |workspace, window, cx| {
+            let editor =
+                cx.new(|cx| Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx));
+            let pane = workspace.active_pane().clone();
+            pane.update(cx, |pane, cx| {
+                pane.add_item(Box::new(editor.clone()), true, true, None, window, cx);
+            });
+            (editor, pane)
+        });
+        for split in [false, true] {
+            source_pane.update_in(cx, |pane, window, cx| {
+                let index = pane.index_for_item(&editor).unwrap();
+                pane.activate_item(index, true, true, window, cx);
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let bounds = cx
+                .debug_bounds("ICON-Eye")
+                .expect("Typst eye button missing");
+            cx.simulate_click(
+                bounds.center(),
+                if split {
+                    gpui::Modifiers::alt()
+                } else {
+                    gpui::Modifiers::default()
+                },
+            );
+            cx.run_until_parked();
+            workspace.read_with(cx, |workspace, cx| {
+                assert_eq!(workspace.panes().len(), if split { 2 } else { 1 });
+                let target = if split {
+                    workspace
+                        .panes()
+                        .iter()
+                        .find(|pane| *pane != &source_pane)
+                        .unwrap()
+                } else {
+                    &source_pane
+                };
+                let preview = target
+                    .read(cx)
+                    .items_of_type::<typst_preview::TypstPreview>()
+                    .next();
+                assert!(preview.is_some(), "Eye button did not open a Typst preview");
+            });
+        }
+    }
+
     pub(crate) fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
         init_test_with_state(cx, cx.update(AppState::test))
     }

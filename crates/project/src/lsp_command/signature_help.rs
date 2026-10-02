@@ -11,7 +11,7 @@ use util::maybe;
 pub struct SignatureHelp {
     pub active_signature: usize,
     pub signatures: Vec<SignatureHelpData>,
-    pub(super) original_data: lsp::SignatureHelp,
+    pub(super) original_data: Option<lsp::SignatureHelp>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +30,44 @@ pub struct ParameterInfo {
 }
 
 impl SignatureHelp {
+    pub fn native(signature: typst_engine::Signature, cx: &mut App) -> Self {
+        let highlights = signature
+            .parameters
+            .get(signature.active_parameter)
+            .map(|range| {
+                (
+                    range.clone(),
+                    HighlightStyle {
+                        font_weight: Some(FontWeight::EXTRA_BOLD),
+                        ..Default::default()
+                    },
+                )
+            })
+            .into_iter()
+            .collect();
+        let documentation = signature
+            .documentation
+            .map(|text| cx.new(|cx| Markdown::new_text(SharedString::from(text), cx)));
+        Self {
+            active_signature: 0,
+            signatures: vec![SignatureHelpData {
+                label: signature.label.into(),
+                documentation,
+                highlights,
+                active_parameter: Some(signature.active_parameter),
+                parameters: signature
+                    .parameters
+                    .into_iter()
+                    .map(|range| ParameterInfo {
+                        label_range: Some(range),
+                        documentation: None,
+                    })
+                    .collect(),
+            }],
+            original_data: None,
+        }
+    }
+
     pub fn new(
         help: lsp::SignatureHelp,
         language_registry: Option<Arc<LanguageRegistry>>,
@@ -128,7 +166,7 @@ impl SignatureHelp {
         Some(Self {
             signatures,
             active_signature,
-            original_data: help,
+            original_data: Some(help),
         })
     }
 }

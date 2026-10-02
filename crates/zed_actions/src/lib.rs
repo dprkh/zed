@@ -893,6 +893,29 @@ pub mod wsl_actions {
 }
 
 pub mod preview {
+    pub mod typst {
+        use gpui::actions;
+        actions!(
+            typst,
+            [
+                /// Open a native live preview of the current Typst document.
+                OpenPreview,
+                /// Open a native Typst preview beside the source editor.
+                OpenPreviewToTheSide,
+                /// Follow the active Typst editor in a native preview.
+                OpenFollowingPreview,
+                /// Increase the Typst preview zoom.
+                ZoomIn,
+                /// Decrease the Typst preview zoom.
+                ZoomOut,
+                /// Go to the next Typst page.
+                NextPage,
+                /// Go to the previous Typst page.
+                PreviousPage,
+            ]
+        );
+    }
+
     pub mod markdown {
         use gpui::actions;
 

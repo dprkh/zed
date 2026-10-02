@@ -3160,6 +3160,9 @@ impl LocalLspStore {
         let Some(language) = buffer.language().cloned() else {
             return;
         };
+        if language.name().as_ref() == "Typst" {
+            return;
+        }
         let path: Arc<RelPath> = file
             .path()
             .parent()
@@ -8158,6 +8161,7 @@ impl LspStore {
                 }
                 CompletionSource::BufferWord { .. }
                 | CompletionSource::Dap { .. }
+                | CompletionSource::Native { .. }
                 | CompletionSource::Custom => {
                     return Ok(());
                 }
@@ -8313,7 +8317,8 @@ impl LspStore {
                     }
                     serde_json::to_string(lsp_completion).unwrap().into_bytes()
                 }
-                CompletionSource::Custom
+                CompletionSource::Native { .. }
+                | CompletionSource::Custom
                 | CompletionSource::Dap { .. }
                 | CompletionSource::BufferWord { .. } => {
                     return Ok(());
@@ -14042,7 +14047,7 @@ impl LspStore {
                 serialized_completion.buffer_word_end = Some(serialize_anchor(&word_range.end));
                 serialized_completion.resolved = *resolved;
             }
-            CompletionSource::Custom => {
+            CompletionSource::Native { .. } | CompletionSource::Custom => {
                 serialized_completion.source = proto::completion::Source::Custom as i32;
                 serialized_completion.resolved = true;
             }

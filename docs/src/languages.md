@@ -73,6 +73,7 @@ Some work out-of-the-box and others rely on [3rd party extensions](./extensions/
 - [Terraform](./languages/terraform.md)
 - [TOML](./languages/toml.md)
 - [TypeScript](./languages/typescript.md) \*
+- [Typst](./languages/typst.md) \*
 - [Uiua](./languages/uiua.md)
 - [Vue](./languages/vue.md)
 - [XML](./languages/xml.md)

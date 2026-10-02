@@ -222,7 +222,8 @@ impl AgentTool for DiagnosticsTool {
                         let mut output = String::new();
                         let mut has_diagnostics = false;
 
-                        for (project_path, _, summary) in project.diagnostic_summaries(true, cx) {
+                        for (project_path, _, summary) in project.all_diagnostic_summaries(true, cx)
+                        {
                             if summary.error_count > 0 || summary.warning_count > 0 {
                                 let Some(worktree) =
                                     project.worktree_for_id(project_path.worktree_id, cx)

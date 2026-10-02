@@ -22,6 +22,7 @@ pub mod telemetry_snapshot;
 pub mod terminals;
 pub mod toolchain_store;
 pub mod trusted_worktrees;
+pub mod typst_store;
 pub mod worktree_store;
 
 mod environment;
@@ -239,6 +240,7 @@ pub struct Project {
     context_server_store: Entity<ContextServerStore>,
     image_store: Entity<ImageStore>,
     lsp_store: Entity<LspStore>,
+    typst_store: std::cell::OnceCell<Entity<typst_store::TypstStore>>,
     _subscriptions: Vec<gpui::Subscription>,
     buffers_needing_diff: HashSet<WeakEntity<Buffer>>,
     git_diff_debouncer: DebouncedDelay<Self>,
@@ -386,6 +388,9 @@ pub enum Event {
     DiagnosticsUpdated {
         paths: Vec<ProjectPath>,
         language_server_id: LanguageServerId,
+    },
+    NativeDiagnosticsUpdated {
+        paths: Vec<ProjectPath>,
     },
     RemoteIdChanged(Option<u64>),
     DisconnectedFromHost,
@@ -627,6 +632,9 @@ pub enum CompletionSource {
     Dap {
         /// The sort text for this completion.
         sort_text: String,
+    },
+    Native {
+        snippet: bool,
     },
     Custom,
     BufferWord {
@@ -1381,6 +1389,7 @@ impl Project {
                 image_store,
                 lsp_store,
                 context_server_store,
+                typst_store: Default::default(),
                 join_project_response_message_id: 0,
                 client_state: ProjectClientState::Local,
                 git_store,
@@ -1608,6 +1617,7 @@ impl Project {
                 image_store,
                 lsp_store,
                 context_server_store,
+                typst_store: Default::default(),
                 bookmark_store,
                 breakpoint_store,
                 dap_store,
@@ -1913,6 +1923,7 @@ impl Project {
                 worktree_store: worktree_store.clone(),
                 lsp_store: lsp_store.clone(),
                 context_server_store,
+                typst_store: Default::default(),
                 active_entry: None,
                 collaborators: Default::default(),
                 join_project_response_message_id: response.message_id,
@@ -3646,8 +3657,20 @@ impl Project {
         match event {
             BufferStoreEvent::BufferAdded(buffer) => {
                 self.register_buffer(buffer, cx).log_err();
+                let project = cx.weak_entity();
+                cx.defer(move |cx| {
+                    project
+                        .update(cx, |project, cx| project.refresh_typst(cx))
+                        .log_err();
+                });
             }
             BufferStoreEvent::BufferDropped(buffer_id) => {
+                let project = cx.weak_entity();
+                cx.defer(move |cx| {
+                    project
+                        .update(cx, |project, cx| project.refresh_typst(cx))
+                        .log_err();
+                });
                 if let Some(ref remote_client) = self.remote_client {
                     remote_client
                         .read(cx)
@@ -3993,6 +4016,19 @@ impl Project {
             WorktreeStoreEvent::WorktreeOrderChanged => cx.emit(Event::WorktreeOrderChanged),
             WorktreeStoreEvent::WorktreeUpdateSent(_) => {}
             WorktreeStoreEvent::WorktreeUpdatedEntries(worktree_id, changes) => {
+                if let Some(store) = self.typst_store.get() {
+                    store.update(cx, |store, _| {
+                        store.invalidate_files(changes.iter().any(|(path, _, _)| {
+                            matches!(path.extension(), Some("ttf" | "otf" | "ttc"))
+                        }))
+                    });
+                    let project = cx.weak_entity();
+                    cx.defer(move |cx| {
+                        project
+                            .update(cx, |project, cx| project.refresh_typst(cx))
+                            .log_err();
+                    });
+                }
                 self.client()
                     .telemetry()
                     .report_discovered_project_type_events(*worktree_id, changes);
@@ -4035,6 +4071,17 @@ impl Project {
         event: &BufferEvent,
         cx: &mut Context<Self>,
     ) -> Option<()> {
+        if matches!(
+            event,
+            BufferEvent::Edited { .. } | BufferEvent::Reloaded | BufferEvent::LanguageChanged(_)
+        ) {
+            let project = cx.weak_entity();
+            cx.defer(move |cx| {
+                project
+                    .update(cx, |project, cx| project.refresh_typst(cx))
+                    .log_err();
+            });
+        }
         if matches!(event, BufferEvent::Edited { .. } | BufferEvent::Reloaded) {
             self.request_buffer_diff_recalculation(&buffer, cx);
         }
@@ -4389,12 +4436,24 @@ impl Project {
         trigger: lsp_store::FormatTrigger,
         cx: &mut Context<Project>,
     ) -> Task<anyhow::Result<ProjectTransaction>> {
-        self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.format(buffers, target, push_to_history, trigger, cx)
-        })
+        let (native, other) = buffers
+            .into_iter()
+            .partition(|buffer| self.is_native_typst(buffer, cx));
+        let native_task = self.typst_format(native, &target, push_to_history, trigger, cx);
+        let other_task = self.lsp_store.update(cx, |store, cx| {
+            store.format(other, target, push_to_history, trigger, cx)
+        });
+        return cx.background_spawn(async move {
+            let mut transaction = native_task.await?;
+            transaction.0.extend(other_task.await?.0);
+            Ok(transaction)
+        });
     }
 
     pub fn supports_range_formatting(&self, buffer: &Entity<Buffer>, cx: &App) -> bool {
+        if self.is_native_typst(buffer, cx) {
+            return true;
+        }
         self.lsp_store
             .read(cx)
             .supports_range_formatting(buffer, cx)
@@ -4406,6 +4465,27 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<LocationLink>>>> {
+        if self.is_native_typst(buffer, cx) {
+            let task = self.typst_locations(
+                buffer,
+                position
+                    .to_point_utf16(buffer.read(cx))
+                    .to_offset(buffer.read(cx)),
+                false,
+                cx,
+            );
+            return cx.background_spawn(async move {
+                Ok(task.await?.map(|locations| {
+                    locations
+                        .into_iter()
+                        .map(|target| LocationLink {
+                            origin: None,
+                            target,
+                        })
+                        .collect()
+                }))
+            });
+        }
         let position = position.to_point_utf16(buffer.read(cx));
         let guard = self.retain_remotely_created_models(cx);
         let task = self.lsp_store.update(cx, |lsp_store, cx| {
@@ -4491,6 +4571,16 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<Vec<Location>>>> {
+        if self.is_native_typst(buffer, cx) {
+            return self.typst_locations(
+                buffer,
+                position
+                    .to_point_utf16(buffer.read(cx))
+                    .to_offset(buffer.read(cx)),
+                true,
+                cx,
+            );
+        }
         let position = position.to_point_utf16(buffer.read(cx));
         let guard = self.retain_remotely_created_models(cx);
         let task = self.lsp_store.update(cx, |lsp_store, cx| {
@@ -4559,6 +4649,29 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Result<Vec<DocumentHighlight>>> {
+        if self.is_native_typst(buffer, cx) {
+            let task = self.typst_locations(
+                buffer,
+                position
+                    .to_point_utf16(buffer.read(cx))
+                    .to_offset(buffer.read(cx)),
+                true,
+                cx,
+            );
+            let buffer = buffer.clone();
+            return cx.background_spawn(async move {
+                Ok(task
+                    .await?
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|location| location.buffer == buffer)
+                    .map(|location| DocumentHighlight {
+                        range: location.range,
+                        kind: DocumentHighlightKind::TEXT,
+                    })
+                    .collect())
+            });
+        }
         let position = position.to_point_utf16(buffer.read(cx));
         self.request_lsp(
             buffer.clone(),
@@ -4644,6 +4757,15 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Option<Vec<Hover>>> {
+        if self.is_native_typst(buffer, cx) {
+            return self.typst_hover(
+                buffer,
+                position
+                    .to_point_utf16(buffer.read(cx))
+                    .to_offset(buffer.read(cx)),
+                cx,
+            );
+        }
         let position = position.to_point_utf16(buffer.read(cx));
         self.lsp_store
             .update(cx, |lsp_store, cx| lsp_store.hover(buffer, position, cx))
@@ -4667,6 +4789,15 @@ impl Project {
         context: CompletionContext,
         cx: &mut Context<Self>,
     ) -> Task<Result<Vec<CompletionResponse>>> {
+        if self.is_native_typst(buffer, cx) {
+            return self.typst_completions(
+                buffer,
+                position
+                    .to_point_utf16(buffer.read(cx))
+                    .to_offset(buffer.read(cx)),
+                cx,
+            );
+        }
         let position = position.to_point_utf16(buffer.read(cx));
         self.lsp_store.update(cx, |lsp_store, cx| {
             lsp_store.completions(buffer, position, context, cx)
@@ -4717,6 +4848,12 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Result<PrepareRenameResponse>> {
+        if self.is_native_typst(&buffer, cx) {
+            let offset = position
+                .to_point_utf16(buffer.read(cx))
+                .to_offset(buffer.read(cx));
+            return self.typst_prepare_rename(buffer, offset, cx);
+        }
         let position = position.to_point_utf16(buffer.read(cx));
         self.request_lsp(
             buffer,
@@ -4734,6 +4871,12 @@ impl Project {
         language_server_id: Option<LanguageServerId>,
         cx: &mut Context<Self>,
     ) -> Task<Result<ProjectTransaction>> {
+        if self.is_native_typst(&buffer, cx) {
+            let offset = position
+                .to_point_utf16(buffer.read(cx))
+                .to_offset(buffer.read(cx));
+            return self.typst_rename(buffer, offset, new_name, cx);
+        }
         let push_to_history = true;
         let position = position.to_point_utf16(buffer.read(cx));
         let mut request = PerformRename {
@@ -5199,6 +5342,16 @@ impl Project {
     }
 
     pub fn set_active_path(&mut self, entry: Option<ProjectPath>, cx: &mut Context<Self>) {
+        if let Some(path) = &entry
+            && let Some(buffer) = self.get_open_buffer(path, cx)
+            && self.is_native_typst(&buffer, cx)
+            && let Some(request) = self.typst_request(&buffer, cx).log_err()
+        {
+            self.typst_store(cx).update(cx, |store, cx| {
+                store.focus(request.input.entry.clone());
+                store.refresh(request, cx);
+            });
+        }
         let new_active_entry = entry.and_then(|project_path| {
             let worktree = self.worktree_for_id(project_path.worktree_id, cx)?;
             let entry = worktree.read(cx).entry_for_path(&project_path.path)?;
@@ -5223,16 +5376,30 @@ impl Project {
     }
 
     pub fn diagnostic_summary(&self, include_ignored: bool, cx: &App) -> DiagnosticSummary {
-        self.lsp_store
+        let mut summary = self
+            .lsp_store
             .read(cx)
-            .diagnostic_summary(include_ignored, cx)
+            .diagnostic_summary(include_ignored, cx);
+        for (_, native) in self.native_diagnostic_summaries(include_ignored, cx) {
+            summary.error_count += native.error_count;
+            summary.warning_count += native.warning_count;
+        }
+        summary
     }
 
     /// Returns a summary of the diagnostics for the provided project path only.
     pub fn diagnostic_summary_for_path(&self, path: &ProjectPath, cx: &App) -> DiagnosticSummary {
-        self.lsp_store
+        let mut summary = self
+            .lsp_store
             .read(cx)
-            .diagnostic_summary_for_path(path, cx)
+            .diagnostic_summary_for_path(path, cx);
+        for (native_path, native) in self.native_diagnostic_summaries(true, cx) {
+            if &native_path == path {
+                summary.error_count += native.error_count;
+                summary.warning_count += native.warning_count;
+            }
+        }
+        summary
     }
 
     pub fn diagnostic_summaries<'a>(
@@ -5243,6 +5410,20 @@ impl Project {
         self.lsp_store
             .read(cx)
             .diagnostic_summaries(include_ignored, cx)
+    }
+
+    pub fn all_diagnostic_summaries<'a>(
+        &'a self,
+        include_ignored: bool,
+        cx: &'a App,
+    ) -> impl Iterator<Item = (ProjectPath, Option<LanguageServerId>, DiagnosticSummary)> + 'a {
+        self.diagnostic_summaries(include_ignored, cx)
+            .map(|(path, server, summary)| (path, Some(server), summary))
+            .chain(
+                self.native_diagnostic_summaries(include_ignored, cx)
+                    .into_iter()
+                    .map(|(path, summary)| (path, None, summary)),
+            )
     }
 
     pub fn active_entry(&self) -> Option<ProjectEntryId> {
@@ -6987,6 +7168,9 @@ impl Completion {
 
     /// Whether this completion is a snippet or snippet-style LSP completion.
     pub fn is_snippet(&self) -> bool {
+        if let CompletionSource::Native { snippet } = self.source {
+            return snippet;
+        }
         self.source
             // `lsp::CompletionListItemDefaults` has `insert_text_format` field
             .lsp_completion(true)

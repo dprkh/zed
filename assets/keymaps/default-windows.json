@@ -607,6 +607,13 @@
     },
   },
   {
+    "context": "Editor && (extension == typ || extension == typst)",
+    "bindings": {
+      "ctrl-k v": "typst::OpenPreviewToTheSide",
+      "ctrl-shift-v": "typst::OpenPreview"
+    }
+  },
+  {
     "context": "Editor && extension == svg",
     "use_key_equivalents": true,
     "bindings": {

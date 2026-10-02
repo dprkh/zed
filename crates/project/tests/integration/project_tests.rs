@@ -17,6 +17,7 @@ mod search_history;
 mod signature_help;
 mod task_inventory;
 mod trusted_worktrees;
+mod typst;
 mod yarn;
 
 use anyhow::Result;

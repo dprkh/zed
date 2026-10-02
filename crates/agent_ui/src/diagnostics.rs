@@ -65,7 +65,7 @@ pub fn collect_diagnostics(
     let project_handle = project.downgrade();
     let diagnostic_summaries: Vec<_> = project
         .read(cx)
-        .diagnostic_summaries(false, cx)
+        .all_diagnostic_summaries(false, cx)
         .flat_map(|(path, _, summary)| {
             let worktree = project.read(cx).worktree_for_id(path.worktree_id, cx)?;
             let full_path = worktree.read(cx).root_name().join(&path.path);

@@ -1,0 +1,28 @@
+[package]
+name = "typst_engine"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lib]
+path = "src/typst_engine.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+typst = "=0.15.1"
+typst-layout = "=0.15.1"
+typst-ide = "=0.15.1"
+typst-svg = "=0.15.1"
+typst-render = "=0.15.1"
+typst-kit = { version = "=0.15.1", features = ["embedded-fonts", "scan-fonts", "system-packages", "system-downloader", "datetime"] }
+typstyle-core = "=0.15.1"
+comemo = "=0.5.1"
+
+[dev-dependencies]
+tempfile.workspace = true

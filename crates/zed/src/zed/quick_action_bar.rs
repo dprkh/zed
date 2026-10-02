@@ -1,4 +1,6 @@
+#[path = "quick_action_bar/preview.rs"]
 mod preview;
+#[path = "quick_action_bar/repl_menu.rs"]
 mod repl_menu;
 
 use agent_settings::AgentSettings;

@@ -763,7 +763,8 @@ impl ProjectPanel {
                         cx.emit(PanelEvent::Activate);
                     }
                     project::Event::DiskBasedDiagnosticsFinished { .. }
-                    | project::Event::DiagnosticsUpdated { .. } => {
+                    | project::Event::DiagnosticsUpdated { .. }
+                    | project::Event::NativeDiagnosticsUpdated { .. } => {
                         if ProjectPanelSettings::get_global(cx).show_diagnostics
                             != ShowDiagnostics::Off
                         {
@@ -1031,7 +1032,7 @@ impl ProjectPanel {
         if show_diagnostics_setting != ShowDiagnostics::Off {
             self.project
                 .read(cx)
-                .diagnostic_summaries(false, cx)
+                .all_diagnostic_summaries(false, cx)
                 .filter_map(|(path, _, diagnostic_summary)| {
                     if diagnostic_summary.error_count > 0 {
                         Some((path, DiagnosticSeverity::ERROR))
@@ -1060,19 +1061,22 @@ impl ProjectPanel {
         let diagnostic_badges = ProjectPanelSettings::get_global(cx).diagnostic_badges;
         self.diagnostic_counts =
             if diagnostic_badges && show_diagnostics_setting != ShowDiagnostics::Off {
-                self.project.read(cx).diagnostic_summaries(false, cx).fold(
-                    HashMap::default(),
-                    |mut counts, (project_path, _, summary)| {
-                        let entry = counts
-                            .entry((project_path.worktree_id, project_path.path))
-                            .or_default();
-                        entry.error_count += summary.error_count;
-                        if show_diagnostics_setting == ShowDiagnostics::All {
-                            entry.warning_count += summary.warning_count;
-                        }
-                        counts
-                    },
-                )
+                self.project
+                    .read(cx)
+                    .all_diagnostic_summaries(false, cx)
+                    .fold(
+                        HashMap::default(),
+                        |mut counts, (project_path, _, summary)| {
+                            let entry = counts
+                                .entry((project_path.worktree_id, project_path.path))
+                                .or_default();
+                            entry.error_count += summary.error_count;
+                            if show_diagnostics_setting == ShowDiagnostics::All {
+                                entry.warning_count += summary.warning_count;
+                            }
+                            counts
+                        },
+                    )
             } else {
                 Default::default()
             };

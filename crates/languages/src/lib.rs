@@ -152,6 +152,10 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
             ..Default::default()
         },
         LanguageInfo {
+            name: "typst",
+            ..Default::default()
+        },
+        LanguageInfo {
             name: "markdown-inline",
             adapters: vec![],
             ..Default::default()

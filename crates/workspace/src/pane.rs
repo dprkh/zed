@@ -743,7 +743,8 @@ impl Pane {
     ) {
         match event {
             project::Event::DiskBasedDiagnosticsFinished { .. }
-            | project::Event::DiagnosticsUpdated { .. } => {
+            | project::Event::DiagnosticsUpdated { .. }
+            | project::Event::NativeDiagnosticsUpdated { .. } => {
                 if ItemSettings::get_global(cx).show_diagnostics != ShowDiagnostics::Off {
                     self.diagnostic_summary_update = cx.spawn(async move |this, cx| {
                         cx.background_executor()
@@ -769,7 +770,7 @@ impl Pane {
         self.diagnostics = if show_diagnostics != ShowDiagnostics::Off {
             project
                 .read(cx)
-                .diagnostic_summaries(false, cx)
+                .all_diagnostic_summaries(false, cx)
                 .filter_map(|(project_path, _, diagnostic_summary)| {
                     if diagnostic_summary.error_count > 0 {
                         Some((project_path, DiagnosticSeverity::ERROR))

@@ -187,10 +187,8 @@ impl ProjectDiagnosticsEditor {
                             || this.focus_handle.contains_focused(window, cx),
                     );
                 }
-                project::Event::DiagnosticsUpdated {
-                    language_server_id,
-                    paths,
-                } => {
+                project::Event::DiagnosticsUpdated { paths, .. }
+                | project::Event::NativeDiagnosticsUpdated { paths } => {
                     this.paths_to_update.extend(paths.clone());
                     this.diagnostic_summary_update = cx.spawn(async move |this, cx| {
                         cx.background_executor()
@@ -202,10 +200,7 @@ impl ProjectDiagnosticsEditor {
                         .log_err();
                     });
 
-                    log::debug!(
-                        "diagnostics updated for server {language_server_id}, \
-                        paths {paths:?}. updating excerpts"
-                    );
+                    log::debug!("diagnostics updated for paths {paths:?}. updating excerpts");
                     this.update_stale_excerpts(window, cx);
                 }
                 _ => {}
@@ -460,7 +455,7 @@ impl ProjectDiagnosticsEditor {
         self.close_diagnosticless_buffers(cx, false);
         self.project.update(cx, |project, cx| {
             self.paths_to_update = project
-                .diagnostic_summaries(false, cx)
+                .all_diagnostic_summaries(false, cx)
                 .map(|(project_path, _, _)| project_path)
                 .collect::<BTreeSet<_>>();
         });

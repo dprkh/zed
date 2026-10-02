@@ -1,7 +1,6 @@
 use crate::{Diagnostic, RelatedInformation, RelatedLocation, range_to_lsp};
 use anyhow::Result;
 use collections::HashMap;
-use lsp::LanguageServerId;
 use serde::Serialize;
 use std::{
     cmp::{Ordering, Reverse},
@@ -293,10 +292,10 @@ impl DiagnosticSet {
     }
 
     /// Adds all of this set's diagnostic groups to the given output vector.
-    pub fn groups<'a>(
+    pub fn groups<'a, Source: Copy + Ord>(
         &'a self,
-        language_server_id: LanguageServerId,
-        output: &mut Vec<(LanguageServerId, DiagnosticGroup<'a, Anchor>)>,
+        language_server_id: Source,
+        output: &mut Vec<(Source, DiagnosticGroup<'a, Anchor>)>,
         buffer: &text::BufferSnapshot,
     ) {
         let mut groups = HashMap::default();

@@ -101,10 +101,8 @@ impl BufferDiagnosticsEditor {
                 Event::DiskBasedDiagnosticsFinished { .. } => {
                     buffer_diagnostics_editor.update_all_excerpts(window, cx);
                 }
-                Event::DiagnosticsUpdated {
-                    paths,
-                    language_server_id,
-                } => {
+                Event::DiagnosticsUpdated { paths, .. }
+                | Event::NativeDiagnosticsUpdated { paths } => {
                     // When diagnostics have been updated, the
                     // `BufferDiagnosticsEditor` should update its state only if
                     // one of the paths matches its `project_path`, otherwise
@@ -112,10 +110,17 @@ impl BufferDiagnosticsEditor {
                     if paths.contains(&buffer_diagnostics_editor.project_path) {
                         buffer_diagnostics_editor.update_diagnostic_summary(cx);
 
-                        if buffer_diagnostics_editor.editor.focus_handle(cx).contains_focused(window, cx) || buffer_diagnostics_editor.focus_handle.contains_focused(window, cx) {
-                            log::debug!("diagnostics updated for server {language_server_id}. recording change");
+                        if buffer_diagnostics_editor
+                            .editor
+                            .focus_handle(cx)
+                            .contains_focused(window, cx)
+                            || buffer_diagnostics_editor
+                                .focus_handle
+                                .contains_focused(window, cx)
+                        {
+                            log::debug!("diagnostics updated for {paths:?}. recording change");
                         } else {
-                            log::debug!("diagnostics updated for server {language_server_id}. updating excerpts");
+                            log::debug!("diagnostics updated for {paths:?}. updating excerpts");
                             buffer_diagnostics_editor.update_all_excerpts(window, cx);
                         }
                     }
