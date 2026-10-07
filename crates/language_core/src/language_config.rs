@@ -94,6 +94,9 @@ pub struct LanguageConfig {
     /// Configuration for ordered lists with auto-incrementing numbers on newline (e.g., `1. ` becomes `2. `).
     #[serde(default)]
     pub ordered_list: Vec<OrderedListConfig>,
+    /// Whether Enter on an empty list item removes its marker to exit the list.
+    #[serde(default = "default_true")]
+    pub remove_empty_list_marker: bool,
     /// Configuration for task lists where multiple markers map to a single continuation prefix (e.g., `- [x] ` continues as `- [ ] `).
     #[serde(default)]
     pub task_list: Option<TaskListConfig>,
@@ -185,6 +188,7 @@ impl Default for LanguageConfig {
             documentation_comment: Default::default(),
             unordered_list: Default::default(),
             ordered_list: Default::default(),
+            remove_empty_list_marker: true,
             task_list: Default::default(),
             rewrap_prefixes: Default::default(),
             scope_opt_in_language_servers: Default::default(),
@@ -371,6 +375,8 @@ impl<'de> Deserialize<'de> for BlockCommentConfig {
 
 #[derive(Clone, Deserialize, Default, Debug, JsonSchema)]
 pub struct LanguageConfigOverride {
+    /// Whether list markers continue when Enter is pressed in this syntax scope.
+    pub extend_list_on_newline: Option<bool>,
     #[serde(default)]
     pub line_comments: Override<Vec<Arc<str>>>,
     #[serde(default)]

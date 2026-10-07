@@ -2691,6 +2691,9 @@ fn list_delimiter_for_newline(
     language: &LanguageScope,
     newline_config: &mut NewlineConfig,
 ) -> Option<Arc<str>> {
+    if !language.extend_list_on_newline() {
+        return None;
+    }
     let (snapshot, range) = buffer.buffer_line_for_row(MultiBufferRow(start_point.row))?;
 
     let num_of_whitespaces = snapshot
@@ -2742,7 +2745,7 @@ fn list_delimiter_for_newline(
                 return Some((*continuation).into());
             }
 
-            if start_point.column as usize == end_of_prefix {
+            if language.remove_empty_list_marker() && start_point.column as usize == end_of_prefix {
                 if num_of_whitespaces == 0 {
                     *newline_config = NewlineConfig::ClearCurrentLine;
                 } else {
@@ -2787,7 +2790,7 @@ fn list_delimiter_for_newline(
                 return Some(continuation.into());
             }
 
-            if start_point.column as usize == end_of_prefix {
+            if language.remove_empty_list_marker() && start_point.column as usize == end_of_prefix {
                 let continuation = ordered_config.format.replace("{1}", "1");
                 if num_of_whitespaces == 0 {
                     *newline_config = NewlineConfig::ClearCurrentLine;

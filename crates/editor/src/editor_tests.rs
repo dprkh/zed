@@ -17143,6 +17143,58 @@ async fn test_typst_autoclose_multiline_surround_delete_and_undo(cx: &mut TestAp
 }
 
 #[gpui::test]
+async fn test_typst_enter_preserves_empty_list_markers(cx: &mut TestAppContext) {
+    let mut cx = typst_editor_test_context(cx).await;
+    for marker in ["1. ", "10. ", "- ", "+ "] {
+        cx.set_state(&format!("{marker}ˇ"));
+        cx.update_editor(|editor, window, cx| editor.newline(&Newline, window, cx));
+        cx.wait_for_autoindent_applied().await;
+        cx.assert_editor_state(&format!("{marker}\nˇ"));
+        cx.update_editor(|editor, window, cx| editor.newline(&Newline, window, cx));
+        cx.wait_for_autoindent_applied().await;
+        cx.assert_editor_state(&format!("{marker}\n\nˇ"));
+        cx.update_editor(|editor, window, cx| editor.undo(&Default::default(), window, cx));
+        assert!(
+            cx.editor(|editor, _, cx| editor.text(cx))
+                .starts_with(marker)
+        );
+    }
+    cx.set_state("1. First itemˇ");
+    cx.update_editor(|editor, window, cx| editor.newline(&Newline, window, cx));
+    cx.wait_for_autoindent_applied().await;
+    cx.assert_editor_state("1. First item\n2. ˇ");
+
+    cx.set_state("Equation 1. ˇ");
+    cx.update_editor(|editor, window, cx| editor.newline(&Newline, window, cx));
+    cx.wait_for_autoindent_applied().await;
+    cx.assert_editor_state("Equation 1. \nˇ");
+}
+
+#[gpui::test]
+async fn test_typst_enter_does_not_continue_lists_in_math(cx: &mut TestAppContext) {
+    let mut cx = typst_editor_test_context(cx).await;
+    for number in ["-2.", "2.", "1.", "+"] {
+        let source = format!("$\n    {number} \\ˇ\n$");
+        cx.set_state(&source);
+        cx.run_until_parked();
+        cx.update_editor(|editor, window, cx| editor.newline(&Newline, window, cx));
+        cx.wait_for_autoindent_applied().await;
+        assert_eq!(
+            cx.editor(|editor, _, cx| editor.text(cx)).replace(' ', ""),
+            source.replace("ˇ", "\n").replace(' ', "")
+        );
+    }
+    cx.set_state("$\n    2. \\ˇ");
+    cx.run_until_parked();
+    cx.update_editor(|editor, window, cx| editor.newline(&Newline, window, cx));
+    cx.wait_for_autoindent_applied().await;
+    assert_eq!(
+        cx.editor(|editor, _, cx| editor.text(cx)).replace(' ', ""),
+        "$\n2.\\\n"
+    );
+}
+
+#[gpui::test]
 async fn test_autoclose_symmetric_delimiters_across_lines(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
     let mut cx = EditorTestContext::new(cx).await;

@@ -19,4 +19,17 @@ brackets = [
     { start = "_", end = "_", close = true, newline = false, surround = true, not_in = ["string", "comment", "raw", "math"] },
 ]
 unordered_list = ["- ", "+ "]
-ordered_list = [{ pattern = "(\\d+)\\. ", format = "{1}. " }]
+ordered_list = [{ pattern = "^(\\d+)\\. ", format = "{1}. " }]
+remove_empty_list_marker = false
+
+[overrides.math]
+extend_list_on_newline = false
+
+[overrides.raw]
+extend_list_on_newline = false
+
+[overrides.string]
+extend_list_on_newline = false
+
+[overrides.comment]
+extend_list_on_newline = false

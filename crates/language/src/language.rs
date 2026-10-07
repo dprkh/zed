@@ -1410,6 +1410,16 @@ impl LanguageScope {
         self.language.config.autoclose_escape_character
     }
 
+    pub fn remove_empty_list_marker(&self) -> bool {
+        self.language.config.remove_empty_list_marker
+    }
+
+    pub fn extend_list_on_newline(&self) -> bool {
+        self.config_override()
+            .and_then(|config| config.extend_list_on_newline)
+            .unwrap_or(true)
+    }
+
     pub fn language_allowed(&self, name: &LanguageServerName) -> bool {
         let config = &self.language.config;
         let opt_in_servers = &config.scope_opt_in_language_servers;
