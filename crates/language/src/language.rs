@@ -1406,6 +1406,10 @@ impl LanguageScope {
         c.is_whitespace() || self.language.config.autoclose_before.contains(c)
     }
 
+    pub fn autoclose_escape_character(&self) -> Option<char> {
+        self.language.config.autoclose_escape_character
+    }
+
     pub fn language_allowed(&self, name: &LanguageServerName) -> bool {
         let config = &self.language.config;
         let opt_in_servers = &config.scope_opt_in_language_servers;

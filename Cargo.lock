@@ -5766,6 +5766,7 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-typescript",
  "tree-sitter-yaml",
+ "tree_sitter_typst",
  "ui",
  "ui_input",
  "unicode-script",

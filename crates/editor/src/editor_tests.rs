@@ -17001,6 +17001,172 @@ async fn test_autoclose_nested_brackets_in_plain_text(cx: &mut TestAppContext) {
     cx.assert_editor_state("([{ˇ}])");
 }
 
+async fn typst_editor_test_context(cx: &mut TestAppContext) -> EditorTestContext {
+    init_test(cx, |_| {});
+    let mut cx = EditorTestContext::new(cx).await;
+    let language = language("typst", tree_sitter_typst::LANGUAGE.into());
+    cx.language_registry().add(language.clone());
+    cx.update_buffer(|buffer, cx| buffer.set_language(Some(language), cx));
+    cx
+}
+
+#[gpui::test]
+async fn test_typst_autoclose_in_math_and_code(cx: &mut TestAppContext) {
+    let mut cx = typst_editor_test_context(cx).await;
+    for (opening, closing) in [("(", ")"), ("[", "]"), ("{", "}")] {
+        for source in ["$ ˇ$", "$\n  ˇ\n$", "#{ˇ}", "ˇ"] {
+            cx.set_state(source);
+            cx.run_until_parked();
+            cx.update_editor(|editor, window, cx| editor.handle_input(opening, window, cx));
+            cx.assert_editor_state(&source.replace("ˇ", &format!("{opening}ˇ{closing}")));
+        }
+        for following in ";:.,=}])>$+-*/^_&|".chars() {
+            let source = format!("$ x + ˇ{following} $");
+            cx.set_state(&source);
+            cx.run_until_parked();
+            cx.update_editor(|editor, window, cx| editor.handle_input(opening, window, cx));
+            cx.assert_editor_state(&source.replace("ˇ", &format!("{opening}ˇ{closing}")));
+        }
+        for source in ["$ ˇx $", "$ ˇ2 $"] {
+            cx.set_state(source);
+            cx.run_until_parked();
+            cx.update_editor(|editor, window, cx| editor.handle_input(opening, window, cx));
+            cx.assert_editor_state(&source.replace("ˇ", &format!("{opening}ˇ")));
+        }
+    }
+
+    cx.set_state("$ ˇ$\n$\n  ˇ\n$\n#{ˇ}");
+    cx.run_until_parked();
+    cx.update_editor(|editor, window, cx| {
+        editor.handle_input("(", window, cx);
+        editor.handle_input("[", window, cx);
+        editor.handle_input("{", window, cx);
+    });
+    cx.assert_editor_state("$ ([{ˇ}])$\n$\n  ([{ˇ}])\n$\n#{([{ˇ}])}");
+    cx.update_editor(|editor, window, cx| {
+        editor.handle_input("}", window, cx);
+        editor.handle_input("]", window, cx);
+        editor.handle_input(")", window, cx);
+    });
+    cx.assert_editor_state("$ ([{}])ˇ$\n$\n  ([{}])ˇ\n$\n#{([{}])ˇ}");
+}
+
+#[gpui::test]
+async fn test_typst_autoclose_respects_literal_scopes_and_escapes(cx: &mut TestAppContext) {
+    let mut cx = typst_editor_test_context(cx).await;
+    for source in [
+        r#"#let value = "a ˇ b""#,
+        r#"$ "a ˇ b" $"#,
+        r#"$ "a ˇ b""#,
+        "// a ˇ b",
+        "/* a ˇ b */",
+        "\u{60}a ˇ b\u{60}",
+        "\u{60}\u{60}\u{60}\na ˇ b\n\u{60}\u{60}\u{60}",
+    ] {
+        for opening in ["(", "[", "{", "$", "\"", "*", "_"] {
+            cx.set_state(source);
+            cx.run_until_parked();
+            cx.update_editor(|editor, window, cx| editor.handle_input(opening, window, cx));
+            cx.assert_editor_state(&source.replace("ˇ", &format!("{opening}ˇ")));
+        }
+    }
+    for source in [
+        "$ x ˇ $",
+        "$ x ˇ",
+        "$\n    x ˇ",
+        "$ (x + ˇ",
+        "$\n    (x + ˇ",
+        "$\n\nˇ",
+    ] {
+        for opening in ["$", "*", "_"] {
+            cx.set_state(source);
+            cx.run_until_parked();
+            cx.update_editor(|editor, window, cx| editor.handle_input(opening, window, cx));
+            cx.assert_editor_state(&source.replace("ˇ", &format!("{opening}ˇ")));
+        }
+    }
+    for (opening, closing) in [("(", ")"), ("[", "]"), ("{", "}"), ("$", "$")] {
+        for escapes in [1, 2, 3, 4] {
+            let prefix = "\\".repeat(escapes);
+            cx.set_state(&format!("{prefix}ˇ"));
+            cx.run_until_parked();
+            cx.update_editor(|editor, window, cx| editor.handle_input(opening, window, cx));
+            let suffix = if escapes % 2 == 0 { closing } else { "" };
+            cx.assert_editor_state(&format!("{prefix}{opening}ˇ{suffix}"));
+        }
+    }
+    cx.set_state("ˇ");
+    cx.update_editor(|editor, window, cx| {
+        editor.handle_input("$", window, cx);
+        editor.handle_input("\\", window, cx);
+        editor.handle_input("$", window, cx);
+    });
+    cx.assert_editor_state("$\\$ˇ$");
+    cx.update_editor(|editor, window, cx| editor.handle_input("$", window, cx));
+    cx.assert_editor_state("$\\$$ˇ");
+    cx.set_state("$ x $\nˇ");
+    cx.run_until_parked();
+    cx.update_editor(|editor, window, cx| editor.handle_input("$", window, cx));
+    cx.assert_editor_state("$ x $\n$ˇ$");
+}
+
+#[gpui::test]
+async fn test_typst_autoclose_multiline_surround_delete_and_undo(cx: &mut TestAppContext) {
+    let mut cx = typst_editor_test_context(cx).await;
+    cx.set_state("ˇ");
+    cx.update_editor(|editor, window, cx| editor.handle_input("$", window, cx));
+    cx.assert_editor_state("$ˇ$");
+    cx.update_editor(|editor, window, cx| editor.handle_input("\nx\n", window, cx));
+    cx.run_until_parked();
+    cx.assert_editor_state("$\n    x\nˇ$");
+    cx.update_editor(|editor, window, cx| editor.handle_input("$", window, cx));
+    cx.assert_editor_state("$\n    x\n$ˇ");
+
+    cx.set_state("$ «x + yˇ» $");
+    cx.run_until_parked();
+    cx.update_editor(|editor, window, cx| editor.handle_input("(", window, cx));
+    cx.assert_editor_state("$ («x + yˇ») $");
+    cx.update_editor(|editor, window, cx| editor.undo(&Default::default(), window, cx));
+    cx.assert_editor_state("$ «x + yˇ» $");
+
+    cx.set_state("$ ˇ$");
+    cx.run_until_parked();
+    cx.update_editor(|editor, window, cx| editor.handle_input("(", window, cx));
+    cx.assert_editor_state("$ (ˇ)$");
+    cx.update_editor(|editor, window, cx| editor.backspace(&Default::default(), window, cx));
+    cx.assert_editor_state("$ ˇ$");
+    cx.update_editor(|editor, window, cx| {
+        editor.set_use_autoclose(false);
+        editor.handle_input("(", window, cx);
+    });
+    cx.assert_editor_state("$ (ˇ$");
+}
+
+#[gpui::test]
+async fn test_autoclose_symmetric_delimiters_across_lines(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let mut cx = EditorTestContext::new(cx).await;
+    let language = Arc::new(Language::new(
+        LanguageConfig {
+            brackets: serde_json::from_value(json!([
+                { "start": "$", "end": "$", "close": true, "newline": true },
+            ]))
+            .unwrap(),
+            autoclose_before: "$".into(),
+            ..Default::default()
+        },
+        None,
+    ));
+    cx.update_buffer(|buffer, cx| buffer.set_language(Some(language), cx));
+    cx.set_state("ˇ");
+    cx.update_editor(|editor, window, cx| {
+        editor.handle_input("$", window, cx);
+        editor.handle_input("\nx\n", window, cx);
+        editor.handle_input("$", window, cx);
+    });
+    cx.assert_editor_state("$\nx\n$ˇ");
+}
+
 #[gpui::test]
 async fn test_autoclose_and_auto_surround_pairs(cx: &mut TestAppContext) {
     init_test(cx, |_| {});

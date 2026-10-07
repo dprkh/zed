@@ -117,7 +117,18 @@ impl Editor {
                 let mut bracket_pair = None;
                 let mut is_bracket_pair_start = false;
                 let mut is_bracket_pair_end = false;
-                if !text.is_empty() {
+                let escaped = selection.is_empty()
+                    && scope.autoclose_escape_character().is_some_and(|escape| {
+                        !text.is_empty()
+                            && text.chars().nth(1).is_none()
+                            && snapshot
+                                .reversed_chars_at(selection.start)
+                                .take_while(|character| *character == escape)
+                                .count()
+                                % 2
+                                == 1
+                    });
+                if !text.is_empty() && !escaped {
                     let mut bracket_pair_matching_end = None;
                     // `text` can be empty when a user is using IME (e.g. Chinese Wubi Simplified)
                     //  and they are removing the character that triggered IME popup.
@@ -164,6 +175,20 @@ impl Editor {
                     let auto_surround =
                         self.use_auto_surround && snapshot_settings.use_auto_surround;
                     if selection.is_empty() {
+                        if let Some(region) = autoclose_region {
+                            // A tracked closer takes precedence over opening another pair,
+                            // including symmetric delimiters on a later line.
+                            let should_skip = selection.end == region.range.end.to_point(&snapshot)
+                                && text.as_ref() == region.pair.end.as_str()
+                                && snapshot.contains_str_at(region.range.end, text.as_ref());
+                            if should_skip {
+                                let anchor = snapshot.anchor_after(selection.end);
+                                new_selections
+                                    .push((selection.map(|_| anchor), region.pair.end.len()));
+                                continue;
+                            }
+                        }
+
                         if is_bracket_pair_start {
                             // If the inserted text is a suffix of an opening bracket and the
                             // selection is preceded by the rest of the opening bracket, then
@@ -260,21 +285,6 @@ impl Editor {
                                     format!("{}{}", text, bracket_pair.end).into(),
                                 ));
                                 bracket_inserted = true;
-                                continue;
-                            }
-                        }
-
-                        if let Some(region) = autoclose_region {
-                            // If the selection is followed by an auto-inserted closing bracket,
-                            // then don't insert that closing bracket again; just move the selection
-                            // past the closing bracket.
-                            let should_skip = selection.end == region.range.end.to_point(&snapshot)
-                                && text.as_ref() == region.pair.end.as_str()
-                                && snapshot.contains_str_at(region.range.end, text.as_ref());
-                            if should_skip {
-                                let anchor = snapshot.anchor_after(selection.end);
-                                new_selections
-                                    .push((selection.map(|_| anchor), region.pair.end.len()));
                                 continue;
                             }
                         }

@@ -1999,11 +1999,25 @@ impl<'a> SyntaxLayer<'a> {
     }
 
     pub(crate) fn override_id(&self, offset: usize, text: &text::BufferSnapshot) -> Option<u32> {
-        let text = TextProvider(text.as_rope());
         let config = self.language.grammar.as_ref()?.override_config.as_ref()?;
+        let whitespace_start = if config
+            .values
+            .values()
+            .any(|entry| entry.extend_through_whitespace)
+        {
+            offset.saturating_sub(
+                text.reversed_chars_at(offset)
+                    .take_while(|character| character.is_whitespace())
+                    .map(char::len_utf8)
+                    .sum(),
+            )
+        } else {
+            offset
+        };
+        let text = TextProvider(text.as_rope());
 
         let mut query_cursor = QueryCursorHandle::new();
-        query_cursor.set_byte_range(offset.saturating_sub(1)..offset.saturating_add(1));
+        query_cursor.set_byte_range(whitespace_start.saturating_sub(1)..offset.saturating_add(1));
         query_cursor.set_containing_byte_range(
             offset.saturating_sub(MAX_BYTES_TO_QUERY / 2)
                 ..offset.saturating_add(MAX_BYTES_TO_QUERY / 2),
@@ -2017,7 +2031,15 @@ impl<'a> SyntaxLayer<'a> {
                     continue;
                 };
 
-                let range = capture.node.byte_range();
+                let mut range = capture.node.byte_range();
+                if override_entry.extend_through_whitespace
+                    && range.end >= whitespace_start
+                    && range.end < offset
+                {
+                    // Error recovery excludes trailing whitespace from the node,
+                    // although typing there still belongs to the unfinished scope.
+                    range.end = offset;
+                }
                 if override_entry.range_is_inclusive {
                     if offset < range.start || offset > range.end {
                         continue;

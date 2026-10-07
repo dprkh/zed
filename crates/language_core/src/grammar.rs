@@ -225,6 +225,7 @@ pub struct OverrideConfig {
 pub struct OverrideEntry {
     pub name: String,
     pub range_is_inclusive: bool,
+    pub extend_through_whitespace: bool,
     pub value: LanguageConfigOverride,
 }
 
@@ -771,10 +772,15 @@ impl Grammar {
         let mut override_configs_by_id = HashMap::default();
         for (ix, mut name) in query.capture_names().iter().copied().enumerate() {
             let mut range_is_inclusive = false;
+            let mut extend_through_whitespace = false;
             if name.starts_with('_') {
                 continue;
             }
-            if let Some(prefix) = name.strip_suffix(".inclusive") {
+            if let Some(prefix) = name.strip_suffix(".inclusive_with_whitespace") {
+                name = prefix;
+                range_is_inclusive = true;
+                extend_through_whitespace = true;
+            } else if let Some(prefix) = name.strip_suffix(".inclusive") {
                 name = prefix;
                 range_is_inclusive = true;
             }
@@ -793,6 +799,7 @@ impl Grammar {
                 OverrideEntry {
                     name: name.to_string(),
                     range_is_inclusive,
+                    extend_through_whitespace,
                     value,
                 },
             );

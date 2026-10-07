@@ -71,6 +71,9 @@ pub struct LanguageConfig {
     /// bracket is inserted.
     #[serde(default)]
     pub autoclose_before: String,
+    /// Escape character that makes a single-character bracket literal when
+    /// an odd number of escapes immediately precedes it.
+    pub autoclose_escape_character: Option<char>,
     /// A placeholder used internally by Semantic Index.
     #[serde(default)]
     pub collapsed_placeholder: String,
@@ -176,6 +179,7 @@ impl Default for LanguageConfig {
             decrease_indent_pattern: Default::default(),
             decrease_indent_patterns: Default::default(),
             autoclose_before: Default::default(),
+            autoclose_escape_character: None,
             line_comments: Default::default(),
             block_comment: Default::default(),
             documentation_comment: Default::default(),
