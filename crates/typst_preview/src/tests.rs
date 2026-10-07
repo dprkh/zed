@@ -8,11 +8,14 @@ use std::{
 };
 use util::path;
 
-struct PreviewTestRoot(Entity<TypstPreview>);
+struct PreviewTestRoot {
+    preview: Entity<TypstPreview>,
+    width: gpui::Pixels,
+}
 
 impl Render for PreviewTestRoot {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().w(px(600.0)).h(px(500.0)).child(self.0.clone())
+        div().w(self.width).h(px(500.0)).child(self.preview.clone())
     }
 }
 
@@ -96,7 +99,12 @@ async fn live_pagebreaks_create_separate_rendered_pages(cx: &mut TestAppContext)
         });
         (preview, editor)
     });
-    cx.update(|window, cx| window.replace_root(cx, |_, _| PreviewTestRoot(preview.clone())));
+    let root = cx.update(|window, cx| {
+        window.replace_root(cx, |_, _| PreviewTestRoot {
+            preview: preview.clone(),
+            width: px(600.0),
+        })
+    });
 
     for settings in ["", "#set page(height: auto)\n"] {
         editor.update_in(cx, |editor, window, cx| {
@@ -131,24 +139,50 @@ async fn live_pagebreaks_create_separate_rendered_pages(cx: &mut TestAppContext)
             let second = preview.list.bounds_for_item(1).unwrap();
             let heights = preview.compilation.as_ref().unwrap().page_sizes();
             let first_paper_bottom =
-                first.origin.y + px(PAGE_GAP / 2.0 + heights[0].1 as f32 * preview.image_scale);
-            let second_paper_top = second.origin.y + px(PAGE_GAP / 2.0);
-            assert!((f32::from(second_paper_top - first_paper_bottom) - PAGE_GAP).abs() < 1.0);
+                first.origin.y + px(PAGE_SPACING + heights[0].1 as f32 * preview.image_scale);
+            let second_paper_top = second.origin.y + px(PAGE_SPACING);
+            assert!((f32::from(second_paper_top - first_paper_bottom) - PAGE_SPACING).abs() < 1.0);
+            let viewport = preview.list.viewport_bounds();
+            assert!(
+                (f32::from(first.origin.y + px(PAGE_SPACING) - viewport.origin.y) - PAGE_SPACING)
+                    .abs()
+                    < 1.0
+            );
             assert!(
                 (f32::from(first.size.height)
                     - heights[0].1 as f32 * preview.image_scale
-                    - PAGE_GAP)
+                    - PAGE_SPACING)
                     .abs()
                     < 1.0
             );
             assert!(
                 (f32::from(second.size.height)
                     - heights[1].1 as f32 * preview.image_scale
-                    - PAGE_GAP)
+                    - 2.0 * PAGE_SPACING)
                     .abs()
                     < 1.0
             );
         });
+
+        preview.update(cx, |preview, _| preview.state.fit_width = true);
+        for width in [600.0, 599.0, 600.0] {
+            root.update(cx, |root, cx| {
+                root.width = px(width);
+                cx.notify();
+            });
+            draw_preview_pages(cx);
+            preview.read_with(cx, |preview, _| {
+                let bounds = preview.list.bounds_for_item(0).unwrap();
+                let page_width = preview.compilation.as_ref().unwrap().page_sizes()[0].0 as f32
+                    * preview.image_scale;
+                assert!((f32::from(bounds.size.width) - width).abs() < 0.1);
+                assert!(
+                    ((f32::from(bounds.size.width) - page_width) / 2.0 - PAGE_SPACING).abs() < 0.1
+                );
+            });
+        }
+        preview.update(cx, |preview, _| preview.state.fit_width = false);
+        draw_preview_pages(cx);
 
         editor.update_in(cx, |editor, window, cx| {
             let offset = buffer.read(cx).text().find("#pagebreak()\n").unwrap();
@@ -165,6 +199,10 @@ async fn live_pagebreaks_create_separate_rendered_pages(cx: &mut TestAppContext)
             assert_eq!(preview.images.len(), 1);
             assert!(!preview.images.contains_key(&1));
             assert!(preview.raster_tasks.is_empty());
+            let bounds = preview.list.bounds_for_item(0).unwrap();
+            let height = preview.compilation.as_ref().unwrap().page_sizes()[0].1 as f32
+                * preview.image_scale;
+            assert!((f32::from(bounds.size.height) - height - 2.0 * PAGE_SPACING).abs() < 1.0);
         });
     }
 }
@@ -313,7 +351,12 @@ async fn shared_preview_retains_pages_on_errors_and_restores_state(cx: &mut Test
         assert!(!preview.state.fit_width);
         assert_eq!(preview.state.page, 1);
     });
-    cx.update(|window, cx| window.replace_root(cx, |_, _| PreviewTestRoot(preview.clone())));
+    cx.update(|window, cx| {
+        window.replace_root(cx, |_, _| PreviewTestRoot {
+            preview: preview.clone(),
+            width: px(600.0),
+        })
+    });
     for _ in 0..4 {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();

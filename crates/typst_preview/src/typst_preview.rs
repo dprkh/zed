@@ -19,7 +19,7 @@ use workspace::{
 };
 pub use zed_actions::preview::typst::*;
 
-const PAGE_GAP: f32 = 24.0;
+const PAGE_SPACING: f32 = 24.0;
 
 #[cfg(test)]
 mod tests;
@@ -347,7 +347,9 @@ impl TypstPreview {
                         }
                         view.list.scroll_to(ListOffset {
                             item_ix: page,
-                            offset_in_item: px((y as f32 * view.image_scale - 48.0).max(0.0)),
+                            offset_in_item: px(
+                                (PAGE_SPACING + y as f32 * view.image_scale - 48.0).max(0.0)
+                            ),
                         });
                         cx.notify();
                     }
@@ -428,6 +430,12 @@ impl TypstPreview {
                 self.list.splice(old_count..old_count, count - old_count);
             } else if count < old_count {
                 self.list.splice(count..old_count, 0);
+            }
+            if count != old_count {
+                // Adding or removing pages changes which retained row has bottom padding.
+                let retained_count = count.min(old_count);
+                self.list
+                    .remeasure_items(retained_count.saturating_sub(1)..retained_count);
             }
             if let Some(previous) = &self.compilation {
                 for (page, (old, new)) in previous
@@ -571,6 +579,10 @@ impl TypstPreview {
         else {
             return div().into_any_element();
         };
+        let is_last_page = self
+            .compilation
+            .as_ref()
+            .is_some_and(|compilation| page == compilation.page_sizes().len().saturating_sub(1));
         self.raster_page(page, window, cx);
         let width = width as f32 * self.image_scale;
         let height = height as f32 * self.image_scale;
@@ -579,7 +591,9 @@ impl TypstPreview {
         h_flex()
             .w_full()
             .justify_center()
-            .py(px(PAGE_GAP / 2.0))
+            .px(px(PAGE_SPACING))
+            .pt(px(PAGE_SPACING))
+            .when(is_last_page, |row| row.pb(px(PAGE_SPACING)))
             .child(
                 div()
                     .id(("typst-page", page))
@@ -605,7 +619,7 @@ impl TypstPreview {
                                     - (bounds.size.width - px(width)) / 2.0,
                             ) / scale;
                             let y =
-                                f32::from(event.position.y - bounds.origin.y - px(PAGE_GAP / 2.0))
+                                f32::from(event.position.y - bounds.origin.y - px(PAGE_SPACING))
                                     / scale;
                             if !view.images.get(&page).is_some_and(|image| {
                                 Some(image.key) == view.raster_key(page, window)
@@ -631,7 +645,7 @@ impl TypstPreview {
                 self.state.page = page;
                 self.list.scroll_to(ListOffset {
                     item_ix: page,
-                    offset_in_item: px(y as f32 * self.image_scale),
+                    offset_in_item: px(PAGE_SPACING + y as f32 * self.image_scale),
                 });
                 cx.emit(StateChanged);
                 cx.notify();
@@ -737,12 +751,14 @@ impl Render for TypstPreview {
             });
             width
                 .zip(page_width)
-                .map(|(width, page_width)| ((width - 32.0) / page_width).clamp(0.1, 8.0))
+                .map(|(width, page_width)| {
+                    ((width - 2.0 * PAGE_SPACING) / page_width).clamp(0.1, 8.0)
+                })
                 .unwrap_or(self.state.zoom)
         } else {
             self.state.zoom
         };
-        if (self.image_scale - scale).abs() > 0.01 {
+        if (self.image_scale - scale).abs() > f32::EPSILON {
             self.image_scale = scale;
             self.list.remeasure_items(0..page_count);
         }
@@ -753,7 +769,7 @@ impl Render for TypstPreview {
                 compilation
                     .page_sizes()
                     .iter()
-                    .map(|size| size.0 as f32 * self.image_scale + 32.0)
+                    .map(|size| size.0 as f32 * self.image_scale + 2.0 * PAGE_SPACING)
                     .max_by(f32::total_cmp)
             })
             .unwrap_or(0.0)
