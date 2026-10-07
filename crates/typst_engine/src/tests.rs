@@ -155,6 +155,49 @@ fn native_rasterization_and_unchanged_page_fingerprints() -> Result<()> {
 }
 
 #[test]
+fn explicit_pagebreaks_separate_auto_height_pages() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let engine = engine(root);
+    for settings in ["", "#set page(height: auto)\n"] {
+        for (body, expected) in [
+            (
+                "First page\n#pagebreak()\nSecond page\n\nAnother paragraph",
+                2,
+            ),
+            ("First page\n#pagebreak()", 2),
+            ("First page\n#pagebreak()\n#pagebreak()\nThird page", 3),
+            ("#pagebreak(weak: true)\nFirst page", 1),
+        ] {
+            let source = format!("{settings}{body}");
+            let compilation = engine
+                .snapshot(input(root, &[("main.typ", &source)]))?
+                .compile();
+            assert!(
+                compilation.diagnostics.is_empty(),
+                "{:?}",
+                compilation.diagnostics
+            );
+            assert_eq!(compilation.page_sizes().len(), expected, "{source}");
+            for page in 0..expected {
+                let raster = compilation.rasterize(page, 0.25)?;
+                assert!(raster.width > 0 && raster.height > 0);
+            }
+            if let Some(offset) = source.find("Second page") {
+                let (page, _, _) = compilation
+                    .jump_from_source(&root.join("main.typ"), offset)
+                    .context("Missing second-page source mapping")?;
+                assert_eq!(page, 1);
+                if !settings.is_empty() {
+                    assert_ne!(compilation.page_sizes()[0].1, compilation.page_sizes()[1].1);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn formatting_respects_selection_and_utf8() -> Result<()> {
     let text = "你好\n#let first=1+2\n#let second=3+4\n";
     let start = text.find("second").unwrap();

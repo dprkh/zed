@@ -19,6 +19,8 @@ use workspace::{
 };
 pub use zed_actions::preview::typst::*;
 
+const PAGE_GAP: f32 = 24.0;
+
 #[cfg(test)]
 mod tests;
 
@@ -577,7 +579,7 @@ impl TypstPreview {
         h_flex()
             .w_full()
             .justify_center()
-            .py(px(12.0))
+            .py(px(PAGE_GAP / 2.0))
             .child(
                 div()
                     .id(("typst-page", page))
@@ -586,7 +588,8 @@ impl TypstPreview {
                     .h(px(height))
                     .bg(gpui::white())
                     .border_1()
-                    .border_color(cx.theme().colors().border)
+                    .border_color(gpui::black().alpha(0.18))
+                    .shadow_sm()
                     .when_some(self.images.get(&page), |page, image| {
                         page.child(img(image.image.clone()).size_full())
                     })
@@ -602,7 +605,8 @@ impl TypstPreview {
                                     - (bounds.size.width - px(width)) / 2.0,
                             ) / scale;
                             let y =
-                                f32::from(event.position.y - bounds.origin.y - px(12.0)) / scale;
+                                f32::from(event.position.y - bounds.origin.y - px(PAGE_GAP / 2.0))
+                                    / scale;
                             if !view.images.get(&page).is_some_and(|image| {
                                 Some(image.key) == view.raster_key(page, window)
                             }) {
@@ -865,6 +869,11 @@ impl Render for TypstPreview {
                     .flex_1()
                     .w_full()
                     .min_h_0()
+                    .bg(cx
+                        .theme()
+                        .colors()
+                        .editor_background
+                        .blend(gpui::black().alpha(0.08)))
                     .child(
                         gpui::canvas(
                             move |bounds, _, cx| {

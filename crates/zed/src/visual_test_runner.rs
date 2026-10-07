@@ -1089,6 +1089,109 @@ fn run_typst_visual_tests(
         buffer.read_with(cx, |buffer, _| buffer.text().starts_with("#text(")),
         "Native Typst function completion did not insert its snippet"
     );
+    let source = "#set page(width: 360pt, height: auto, margin: 18pt)\n\
+                  #set text(size: 11pt)\n\
+                  = Before the break\n\
+                  This stays on the first page.\n\n\
+                  $ (x + 1)^2 $\n\n\
+                  = After the break\n\
+                  This starts on a separate page.\n\n\
+                  Another paragraph makes this page a different height.";
+    for (theme_name, appearance) in [("One Dark", "dark"), ("One Light", "light")] {
+        update_typst_visual_workspace(&workspace, window, cx, |workspace, _, cx| {
+            let theme = theme::ThemeRegistry::global(cx).get(theme_name)?;
+            theme::GlobalTheme::update_theme(cx, theme.clone());
+            workspace.project().read(cx).languages().set_theme(theme);
+            anyhow::Ok(())
+        })??;
+        buffer.update(cx, |buffer, cx| {
+            buffer.edit([(0..buffer.len(), source)], None, cx)
+        });
+        cx.run_until_parked();
+        cx.advance_clock(Duration::from_millis(25));
+        cx.run_until_parked();
+        draw_typst_visual_frames(window, cx)?;
+        run_visual_test(
+            &format!("typst_pagebreak_before_{appearance}"),
+            window,
+            cx,
+            update_baseline,
+        )?;
+
+        update_typst_visual_workspace(&workspace, window, cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                let offset = source
+                    .find("= After the break")
+                    .context("Missing heading")?;
+                editor.change_selections(Default::default(), window, cx, |selections| {
+                    selections.select_ranges([
+                        editor::MultiBufferOffset(offset)..editor::MultiBufferOffset(offset)
+                    ]);
+                });
+                editor.handle_input("#pagebreak()\n", window, cx);
+                anyhow::Ok(())
+            })
+        })??;
+        cx.run_until_parked();
+        cx.advance_clock(Duration::from_millis(25));
+        cx.run_until_parked();
+        draw_typst_visual_frames(window, cx)?;
+        run_visual_test(
+            &format!("typst_pagebreak_two_pages_{appearance}"),
+            window,
+            cx,
+            update_baseline,
+        )?;
+
+        update_typst_visual_workspace(&workspace, window, cx, |_, window, cx| {
+            preview.focus_handle(cx).focus(window, cx);
+            window.dispatch_action(zed_actions::preview::typst::ZoomOut.boxed_clone(), cx);
+        })?;
+        draw_typst_visual_frames(window, cx)?;
+        run_visual_test(
+            &format!("typst_pagebreak_zoom_{appearance}"),
+            window,
+            cx,
+            update_baseline,
+        )?;
+
+        update_typst_visual_workspace(&workspace, window, cx, |workspace, window, cx| {
+            workspace.resize_pane(gpui::Axis::Horizontal, px(80.0), window, cx);
+        })?;
+        draw_typst_visual_frames(window, cx)?;
+        run_visual_test(
+            &format!("typst_pagebreak_resized_{appearance}"),
+            window,
+            cx,
+            update_baseline,
+        )?;
+
+        update_typst_visual_workspace(&workspace, window, cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                let offset = buffer
+                    .read(cx)
+                    .text()
+                    .find("#pagebreak()\n")
+                    .context("Missing page break")?;
+                editor.change_selections(Default::default(), window, cx, |selections| {
+                    selections.select_ranges([editor::MultiBufferOffset(offset)
+                        ..editor::MultiBufferOffset(offset + "#pagebreak()\n".len())]);
+                });
+                editor.handle_input("", window, cx);
+                anyhow::Ok(())
+            })
+        })??;
+        cx.run_until_parked();
+        cx.advance_clock(Duration::from_millis(25));
+        cx.run_until_parked();
+        draw_typst_visual_frames(window, cx)?;
+        run_visual_test(
+            &format!("typst_pagebreak_removed_{appearance}"),
+            window,
+            cx,
+            update_baseline,
+        )?;
+    }
     println!("Native Typst preview visual checks passed");
     Ok(())
 }

@@ -16,8 +16,7 @@ impl Render for PreviewTestRoot {
     }
 }
 
-#[gpui::test]
-async fn shared_preview_retains_pages_on_errors_and_restores_state(cx: &mut TestAppContext) {
+fn init_preview_test(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(db::AppDatabase::test_new());
         workspace::AppState::test(cx);
@@ -32,6 +31,147 @@ async fn shared_preview_retains_pages_on_errors_and_restores_state(cx: &mut Test
             cx,
         );
     });
+}
+
+fn draw_preview_pages(cx: &mut gpui::VisualTestContext) {
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(25));
+    cx.run_until_parked();
+    for _ in 0..4 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+}
+
+#[gpui::test]
+async fn live_pagebreaks_create_separate_rendered_pages(cx: &mut TestAppContext) {
+    init_preview_test(cx);
+    let filesystem = fs::FakeFs::new(cx.executor());
+    filesystem
+        .insert_tree(
+            path!("/typst"),
+            serde_json::json!({"main.typ": "First page\nSecond page\n\nAnother paragraph"}),
+        )
+        .await;
+    let project = Project::test(filesystem, [path!("/typst").as_ref()], cx).await;
+    project
+        .read_with(cx, |project, _| project.languages().clone())
+        .add(Arc::new(language::Language::new(
+            language::LanguageConfig {
+                name: "Typst".into(),
+                matcher: language::LanguageMatcher {
+                    path_suffixes: vec!["typ".into()],
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            },
+            None,
+        )));
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/typst/main.typ"), cx)
+        })
+        .await
+        .unwrap();
+    let (workspace, cx) =
+        cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+    let (preview, editor) = workspace.update_in(cx, |workspace, window, cx| {
+        let editor =
+            cx.new(|cx| Editor::for_buffer(buffer.clone(), Some(project.clone()), window, cx));
+        let preview = TypstPreview::new(
+            editor.clone(),
+            project,
+            workspace.weak_handle(),
+            false,
+            None,
+            window,
+            cx,
+        )
+        .unwrap();
+        preview.update(cx, |preview, _| {
+            preview.state.cursor_follow = false;
+            preview.state.fit_width = false;
+            preview.state.zoom = 0.15;
+        });
+        (preview, editor)
+    });
+    cx.update(|window, cx| window.replace_root(cx, |_, _| PreviewTestRoot(preview.clone())));
+
+    for settings in ["", "#set page(height: auto)\n"] {
+        editor.update_in(cx, |editor, window, cx| {
+            let length = buffer.read(cx).len();
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([MultiBufferOffset(0)..MultiBufferOffset(length)])
+            });
+            editor.handle_input(
+                &format!("{settings}First page\nSecond page\n\nAnother paragraph"),
+                window,
+                cx,
+            );
+        });
+        draw_preview_pages(cx);
+        preview.read_with(cx, |preview, _| {
+            assert_eq!(preview.list.item_count(), 1);
+            assert_eq!(preview.images.len(), 1);
+        });
+
+        editor.update_in(cx, |editor, window, cx| {
+            let offset = buffer.read(cx).text().find("Second page").unwrap();
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([MultiBufferOffset(offset)..MultiBufferOffset(offset)])
+            });
+            editor.handle_input("#pagebreak()\n", window, cx);
+        });
+        draw_preview_pages(cx);
+        preview.read_with(cx, |preview, _| {
+            assert_eq!(preview.list.item_count(), 2);
+            assert_eq!(preview.images.len(), 2);
+            let first = preview.list.bounds_for_item(0).unwrap();
+            let second = preview.list.bounds_for_item(1).unwrap();
+            let heights = preview.compilation.as_ref().unwrap().page_sizes();
+            let first_paper_bottom =
+                first.origin.y + px(PAGE_GAP / 2.0 + heights[0].1 as f32 * preview.image_scale);
+            let second_paper_top = second.origin.y + px(PAGE_GAP / 2.0);
+            assert!((f32::from(second_paper_top - first_paper_bottom) - PAGE_GAP).abs() < 1.0);
+            assert!(
+                (f32::from(first.size.height)
+                    - heights[0].1 as f32 * preview.image_scale
+                    - PAGE_GAP)
+                    .abs()
+                    < 1.0
+            );
+            assert!(
+                (f32::from(second.size.height)
+                    - heights[1].1 as f32 * preview.image_scale
+                    - PAGE_GAP)
+                    .abs()
+                    < 1.0
+            );
+        });
+
+        editor.update_in(cx, |editor, window, cx| {
+            let offset = buffer.read(cx).text().find("#pagebreak()\n").unwrap();
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections
+                    .select_ranges([MultiBufferOffset(offset)
+                        ..MultiBufferOffset(offset + "#pagebreak()\n".len())])
+            });
+            editor.handle_input("", window, cx);
+        });
+        draw_preview_pages(cx);
+        preview.read_with(cx, |preview, _| {
+            assert_eq!(preview.list.item_count(), 1);
+            assert_eq!(preview.images.len(), 1);
+            assert!(!preview.images.contains_key(&1));
+            assert!(preview.raster_tasks.is_empty());
+        });
+    }
+}
+
+#[gpui::test]
+async fn shared_preview_retains_pages_on_errors_and_restores_state(cx: &mut TestAppContext) {
+    init_preview_test(cx);
     let filesystem = fs::FakeFs::new(cx.executor());
     filesystem
         .insert_tree(
