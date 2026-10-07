@@ -85,7 +85,7 @@ async fn live_pagebreaks_create_separate_rendered_pages(cx: &mut TestAppContext)
         let preview = TypstPreview::new(
             editor.clone(),
             project,
-            workspace.weak_handle(),
+            Some(workspace.weak_handle()),
             false,
             None,
             window,
@@ -205,6 +205,160 @@ async fn live_pagebreaks_create_separate_rendered_pages(cx: &mut TestAppContext)
             assert!((f32::from(bounds.size.height) - height - 2.0 * PAGE_SPACING).abs() < 1.0);
         });
     }
+}
+
+#[gpui::test]
+async fn preview_first_opening_and_source_navigation_center_the_editor(cx: &mut TestAppContext) {
+    init_preview_test(cx);
+    let source = (0..240)
+        .map(|line| format!("Line {line}."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let filesystem = fs::FakeFs::new(cx.executor());
+    filesystem
+        .insert_tree(
+            path!("/typst"),
+            serde_json::json!({"main.typ": source, "other.txt": "Plain text"}),
+        )
+        .await;
+    let project = Project::test(filesystem, [path!("/typst").as_ref()], cx).await;
+    project
+        .read_with(cx, |project, _| project.languages().clone())
+        .add(Arc::new(language::Language::new(
+            language::LanguageConfig {
+                name: "Typst".into(),
+                matcher: language::LanguageMatcher {
+                    path_suffixes: vec!["typ".into()],
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            },
+            None,
+        )));
+    let (workspace, cx) =
+        cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+    let worktree_id = project.read_with(cx, |project, cx| {
+        project.worktrees(cx).next().unwrap().read(cx).id()
+    });
+    let project_path = project::ProjectPath {
+        worktree_id,
+        path: util::rel_path::rel_path("main.typ").into(),
+    };
+    let open = workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_path(project_path.clone(), None, true, window, cx)
+    });
+    let preview = open.await.unwrap().downcast::<TypstPreview>().unwrap();
+    draw_preview_pages(cx);
+    workspace.read_with(cx, |workspace, cx| {
+        assert_eq!(workspace.panes().len(), 1);
+        assert_eq!(
+            workspace
+                .active_pane()
+                .read(cx)
+                .items_of_type::<Editor>()
+                .count(),
+            0
+        );
+        assert_eq!(
+            workspace
+                .active_pane()
+                .read(cx)
+                .active_item()
+                .unwrap()
+                .item_id(),
+            preview.entity_id()
+        );
+    });
+    let reopen = workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_path(project_path.clone(), None, true, window, cx)
+    });
+    assert_eq!(
+        reopen.await.unwrap().downcast::<TypstPreview>().unwrap(),
+        preview
+    );
+    workspace.update_in(cx, |workspace, window, cx| {
+        let pane = workspace.active_pane().clone();
+        TypstPreview::open_source_in_pane(workspace, preview.clone(), pane, false, window, cx);
+    });
+    let editor = workspace.read_with(cx, |workspace, cx| {
+        workspace.active_item_as::<Editor>(cx).unwrap()
+    });
+    assert_eq!(
+        editor,
+        preview.read_with(cx, |preview, _| preview.editor.clone())
+    );
+    let reopen = workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_path(project_path.clone(), None, true, window, cx)
+    });
+    assert_eq!(
+        reopen.await.unwrap().downcast::<TypstPreview>().unwrap(),
+        preview
+    );
+    let close_source = workspace.update_in(cx, |workspace, window, cx| {
+        workspace.pane_for(&editor).unwrap().update(cx, |pane, cx| {
+            pane.close_item_by_id(
+                editor.entity_id(),
+                workspace::SaveIntent::Skip,
+                window,
+                cx,
+            )
+        })
+    });
+    close_source.await.unwrap();
+    let offset = source.find("Line 120.").unwrap();
+    preview.update_in(cx, |preview, window, cx| {
+        preview.navigate(
+            Navigation::Source(typst_engine::Location {
+                path: path!("/typst/main.typ").into(),
+                range: offset..offset + "Line 120.".len(),
+            }),
+            window,
+            cx,
+        );
+    });
+    draw_preview_pages(cx);
+    editor.update_in(cx, |editor, window, cx| {
+        let scroll = editor.snapshot(window, cx).scroll_position();
+        let visible = editor.visible_line_count().unwrap();
+        let center = scroll.y + visible / 2.0;
+        assert!(
+            (center - 120.0).abs() < 2.0,
+            "Expected centered row 120, got {center}"
+        );
+        assert_eq!(
+            editor
+                .selections
+                .newest_anchor()
+                .start
+                .to_offset(&editor.buffer().read(cx).snapshot(cx))
+                .0,
+            offset
+        );
+    });
+    workspace.read_with(cx, |workspace, cx| {
+        assert_eq!(
+            workspace
+                .active_pane()
+                .read(cx)
+                .items_of_type::<Editor>()
+                .count(),
+            1
+        );
+    });
+    let plain = workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_path(
+            project::ProjectPath {
+                worktree_id,
+                path: util::rel_path::rel_path("other.txt").into(),
+            },
+            None,
+            true,
+            window,
+            cx,
+        )
+    });
+    assert!(plain.await.unwrap().downcast::<Editor>().is_some());
 }
 
 #[gpui::test]

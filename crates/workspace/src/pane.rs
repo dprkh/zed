@@ -1084,7 +1084,8 @@ impl Pane {
         let mut existing_item = None;
         if let Some(project_entry_id) = project_entry_id {
             for (index, item) in self.items.iter().enumerate() {
-                if item.buffer_kind(cx) == ItemBufferKind::Singleton
+                if build_item.matches(item.as_ref())
+                    && item.buffer_kind(cx) == ItemBufferKind::Singleton
                     && item.project_entry_ids(cx).as_slice() == [project_entry_id]
                 {
                     let item = item.boxed_clone();
@@ -1094,7 +1095,8 @@ impl Pane {
             }
         } else {
             for (index, item) in self.items.iter().enumerate() {
-                if item.buffer_kind(cx) == ItemBufferKind::Singleton
+                if build_item.matches(item.as_ref())
+                    && item.buffer_kind(cx) == ItemBufferKind::Singleton
                     && item.project_path(cx).as_ref() == Some(&project_path)
                 {
                     let item = item.boxed_clone();
@@ -1157,7 +1159,7 @@ impl Pane {
                 suggested_position
             };
 
-            let new_item = build_item(self, window, cx);
+            let new_item = build_item.build(self, window, cx);
             // A special case that won't ever get a `project_entry_id` but has to be deduplicated nonetheless.
             if let Some(invalid_buffer_view) = new_item.downcast::<InvalidItemView>() {
                 let mut already_open_view = None;
@@ -1284,7 +1286,9 @@ impl Pane {
         let existing_item_index = self.items.iter().position(|existing_item| {
             if existing_item.item_id() == item.item_id() {
                 true
-            } else if existing_item.buffer_kind(cx) == ItemBufferKind::Singleton {
+            } else if existing_item.to_any_view().entity_type() == item.to_any_view().entity_type()
+                && existing_item.buffer_kind(cx) == ItemBufferKind::Singleton
+            {
                 existing_item
                     .project_entry_ids(cx)
                     .first()

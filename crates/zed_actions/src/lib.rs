@@ -904,6 +904,10 @@ pub mod preview {
                 OpenPreviewToTheSide,
                 /// Follow the active Typst editor in a native preview.
                 OpenFollowingPreview,
+                /// Open the source editor for the current Typst preview.
+                OpenSource,
+                /// Open the source editor beside the current Typst preview.
+                OpenSourceToTheSide,
                 /// Increase the Typst preview zoom.
                 ZoomIn,
                 /// Decrease the Typst preview zoom.

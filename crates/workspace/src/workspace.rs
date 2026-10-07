@@ -1038,7 +1038,8 @@ pub fn init(app_state: Arc<AppState>, cx: &mut App) {
 type BuildProjectItemFn =
     fn(AnyEntity, Entity<Project>, Option<&Pane>, &mut Window, &mut App) -> Box<dyn ItemHandle>;
 
-type BuildProjectItemForPathFn =
+/// Opens a project path with a specialized workspace view, or defers to another opener.
+pub type ProjectPathOpener =
     fn(
         &Entity<Project>,
         &ProjectPath,
@@ -1049,7 +1050,7 @@ type BuildProjectItemForPathFn =
 #[derive(Clone, Default)]
 struct ProjectItemRegistry {
     build_project_item_fns_by_type: TypeIdHashMap<BuildProjectItemFn>,
-    build_project_item_for_path_fns: Vec<BuildProjectItemForPathFn>,
+    build_project_item_for_path_fns: Vec<ProjectPathOpener>,
 }
 
 impl ProjectItemRegistry {
@@ -1085,9 +1086,9 @@ impl ProjectItemRegistry {
                             let project_item = project_item;
                             let project_entry_id: Option<ProjectEntryId> =
                                 project_item.read_with(cx, project::ProjectItem::entry_id);
-                            let build_workspace_item = Box::new(
+                            let build_workspace_item = WorkspaceItemBuilder::new(
                                 |pane: &mut Pane, window: &mut Window, cx: &mut Context<Pane>| {
-                                    Box::new(cx.new(|cx| {
+                                    cx.new(|cx| {
                                         T::for_project_item(
                                             project,
                                             Some(pane),
@@ -1095,9 +1096,9 @@ impl ProjectItemRegistry {
                                             window,
                                             cx,
                                         )
-                                    })) as Box<dyn ItemHandle>
+                                    })
                                 },
-                            ) as Box<_>;
+                            );
                             Ok((project_entry_id, build_workspace_item))
                         }
                         Err(e) => {
@@ -1113,12 +1114,11 @@ impl ProjectItemRegistry {
                                             )
                                         })?
                                     {
-                                        let build_workspace_item = Box::new(
+                                        let build_workspace_item = WorkspaceItemBuilder::new(
                                             move |_: &mut Pane, _: &mut Window, cx: &mut Context<Pane>| {
-                                                cx.new(|_| broken_project_item_view).boxed_clone()
+                                                cx.new(|_| broken_project_item_view)
                                             },
-                                        )
-                                        as Box<_>;
+                                        );
                                         return Ok((None, build_workspace_item));
                                     }
                                 }
@@ -1163,8 +1163,38 @@ impl ProjectItemRegistry {
     }
 }
 
-type WorkspaceItemBuilder =
+type BuildWorkspaceItem =
     Box<dyn FnOnce(&mut Pane, &mut Window, &mut Context<Pane>) -> Box<dyn ItemHandle>>;
+
+/// Builds a workspace item and identifies its view type before constructing it.
+pub struct WorkspaceItemBuilder {
+    item_type: TypeId,
+    build: BuildWorkspaceItem,
+}
+
+impl WorkspaceItemBuilder {
+    pub fn new<I: Item>(
+        build: impl FnOnce(&mut Pane, &mut Window, &mut Context<Pane>) -> Entity<I> + 'static,
+    ) -> Self {
+        Self {
+            item_type: TypeId::of::<I>(),
+            build: Box::new(move |pane, window, cx| Box::new(build(pane, window, cx))),
+        }
+    }
+
+    pub(crate) fn matches(&self, item: &dyn ItemHandle) -> bool {
+        item.to_any_view().entity_type() == self.item_type
+    }
+
+    pub(crate) fn build(
+        self,
+        pane: &mut Pane,
+        window: &mut Window,
+        cx: &mut Context<Pane>,
+    ) -> Box<dyn ItemHandle> {
+        (self.build)(pane, window, cx)
+    }
+}
 
 impl Global for ProjectItemRegistry {}
 
@@ -1173,6 +1203,12 @@ impl Global for ProjectItemRegistry {}
 /// was added last.
 pub fn register_project_item<I: ProjectItem>(cx: &mut App) {
     cx.default_global::<ProjectItemRegistry>().register::<I>();
+}
+
+pub fn register_project_path_opener(opener: ProjectPathOpener, cx: &mut App) {
+    cx.default_global::<ProjectItemRegistry>()
+        .build_project_item_for_path_fns
+        .push(opener);
 }
 
 #[derive(Default)]
@@ -5081,6 +5117,7 @@ impl Workspace {
                             &requested_pane,
                             project_entry_id,
                             &project_path,
+                            build_item.item_type,
                             cx,
                         )
                     })
@@ -5113,11 +5150,14 @@ impl Workspace {
         requested_pane: &WeakEntity<Pane>,
         project_entry_id: Option<ProjectEntryId>,
         project_path: &ProjectPath,
+        item_type: TypeId,
         cx: &App,
     ) -> Option<Entity<Pane>> {
         let pane_contains_project_item = |pane: &Entity<Pane>| {
             pane.read(cx).items().any(|item| {
-                if item.buffer_kind(cx) != ItemBufferKind::Singleton {
+                if item.to_any_view().entity_type() != item_type
+                    || item.buffer_kind(cx) != ItemBufferKind::Singleton
+                {
                     return false;
                 }
 
@@ -5339,17 +5379,17 @@ impl Workspace {
         let entry_id = project_item.entry_id(cx);
         let project_path = project_item.project_path(cx);
 
-        let mut item = None;
-        if let Some(entry_id) = entry_id {
-            item = pane.read(cx).item_for_entry(entry_id, cx);
-        }
-        if item.is_none()
-            && let Some(project_path) = project_path
-        {
-            item = pane.read(cx).item_for_path(project_path, cx);
-        }
-
-        item.and_then(|item| item.downcast::<T>())
+        pane.read(cx).items_of_type::<T>().find(|item| {
+            let item: &dyn ItemHandle = item;
+            item.buffer_kind(cx) == ItemBufferKind::Singleton
+                && if let Some(entry_id) = entry_id {
+                    item.project_entry_ids(cx).as_slice() == [entry_id]
+                } else {
+                    project_path
+                        .as_ref()
+                        .is_some_and(|path| item.project_path(cx).as_ref() == Some(path))
+                }
+        })
     }
 
     pub fn is_project_item_open<T>(

@@ -931,9 +931,49 @@ fn run_typst_visual_tests(
     cx.background_executor.allow_parking();
     let item = cx.foreground_executor.block_test(task)?;
     cx.background_executor.forbid_parking();
-    let editor = item
-        .downcast::<editor::Editor>()
-        .context("Missing Typst editor")?;
+    let initial_preview = item
+        .downcast::<typst_preview::TypstPreview>()
+        .context("Typst files should open in preview")?;
+    update_typst_visual_workspace(&workspace, window, cx, |workspace, _, cx| {
+        anyhow::ensure!(
+            workspace
+                .items_of_type::<editor::Editor>(cx)
+                .next()
+                .is_none(),
+            "Opening a Typst file unexpectedly opened the source editor"
+        );
+        anyhow::Ok(())
+    })??;
+    cx.run_until_parked();
+    cx.advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    draw_typst_visual_frames(window, cx)?;
+    run_visual_test("typst_default_preview", window, cx, update_baseline)?;
+    update_typst_visual_workspace(&workspace, window, cx, |_, window, cx| {
+        window.dispatch_action(zed_actions::preview::typst::OpenSource.boxed_clone(), cx);
+    })?;
+    cx.run_until_parked();
+    let editor = update_typst_visual_workspace(&workspace, window, cx, |workspace, _, cx| {
+        workspace.active_item_as::<editor::Editor>(cx)
+    })?
+    .context("The edit action did not open the Typst source")?;
+    let close_preview =
+        update_typst_visual_workspace(&workspace, window, cx, |workspace, window, cx| {
+            let pane = workspace
+                .pane_for(&initial_preview)
+                .context("Missing initial preview pane")?;
+            anyhow::Ok(pane.update(cx, |pane, cx| {
+                pane.close_item_by_id(
+                    initial_preview.entity_id(),
+                    workspace::SaveIntent::Skip,
+                    window,
+                    cx,
+                )
+            }))
+        })??;
+    cx.background_executor.allow_parking();
+    cx.foreground_executor.block_test(close_preview)?;
+    cx.background_executor.forbid_parking();
     update_typst_visual_workspace(&workspace, window, cx, |workspace, window, cx| {
         let toolbar = workspace.active_pane().read(cx).toolbar().clone();
         let search_bar = cx.new(|cx| {

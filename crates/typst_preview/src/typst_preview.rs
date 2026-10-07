@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 use collections::HashMap;
-use editor::{Editor, EditorEvent};
+use editor::{Editor, EditorEvent, SelectionEffects, scroll::Autoscroll};
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ListAlignment, ListOffset, ListState, MouseButton, Render, RenderImage, ScrollHandle,
@@ -9,13 +9,13 @@ use gpui::{
 use multi_buffer::MultiBufferOffset;
 use project::{Project, typst_store::TypstStore};
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc};
+use std::{ops::Range, path::PathBuf, sync::Arc};
 use typst_engine::{Compilation, Navigation};
-use ui::{TintColor, prelude::*};
+use ui::{TintColor, Tooltip, prelude::*, text_for_keystroke};
 use util::ResultExt as _;
 use workspace::{
-    ItemId, Pane, Workspace, WorkspaceId,
-    item::{Item, ItemEvent, SerializableItem},
+    ItemId, Pane, Workspace, WorkspaceId, WorkspaceItemBuilder,
+    item::{Item, ItemBufferKind, ItemEvent, SaveOptions, SerializableItem},
 };
 pub use zed_actions::preview::typst::*;
 
@@ -37,7 +37,7 @@ struct ViewState {
 
 pub struct TypstPreview {
     focus_handle: FocusHandle,
-    workspace: WeakEntity<Workspace>,
+    workspace: Option<WeakEntity<Workspace>>,
     project: Entity<Project>,
     store: Entity<TypstStore>,
     editor: Entity<Editor>,
@@ -53,6 +53,7 @@ pub struct TypstPreview {
     horizontal_scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
     _editor_subscription: Option<Subscription>,
+    _workspace_subscription: Option<Subscription>,
     _refresh: Task<()>,
 }
 
@@ -79,6 +80,32 @@ impl EventEmitter<StateChanged> for TypstPreview {}
 
 pub fn init(cx: &mut App) {
     workspace::register_serializable_item::<TypstPreview>(cx);
+    workspace::register_project_path_opener(
+        |project, path, window, cx| {
+            if !project.read(cx).is_local()
+                || !path.path.extension().is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case("typ") || extension.eq_ignore_ascii_case("typst")
+                })
+            {
+                return None;
+            }
+            let project = project.clone();
+            let buffer = project.update(cx, |project, cx| project.open_buffer(path.clone(), cx));
+            Some(window.spawn(cx, async move |cx| {
+                let buffer = buffer.await?;
+                let (entry, preview) = cx.update(|window, cx| {
+                    let entry = project::ProjectItem::entry_id(buffer.read(cx), cx);
+                    let editor =
+                        cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx));
+                    let preview =
+                        TypstPreview::new(editor, project, None, false, None, window, cx)?;
+                    anyhow::Ok((entry, preview))
+                })??;
+                Ok((entry, WorkspaceItemBuilder::new(move |_, _, _| preview)))
+            }))
+        },
+        cx,
+    );
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
         workspace.register_action(|workspace, _: &OpenPreview, window, cx| {
             TypstPreview::open(workspace, false, false, window, cx);
@@ -89,11 +116,91 @@ pub fn init(cx: &mut App) {
         workspace.register_action(|workspace, _: &OpenFollowingPreview, window, cx| {
             TypstPreview::open(workspace, true, true, window, cx);
         });
+        workspace.register_action(|workspace, _: &OpenSource, window, cx| {
+            TypstPreview::open_active_source(workspace, false, window, cx);
+        });
+        workspace.register_action(|workspace, _: &OpenSourceToTheSide, window, cx| {
+            TypstPreview::open_active_source(workspace, true, window, cx);
+        });
     })
     .detach();
 }
 
 impl TypstPreview {
+    fn open_active_source(
+        workspace: &mut Workspace,
+        split: bool,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let Some(preview) = workspace.active_item_as::<Self>(cx) else {
+            return;
+        };
+        let pane = workspace.active_pane().clone();
+        Self::open_source_in_pane(workspace, preview, pane, split, window, cx);
+    }
+
+    pub fn open_source_in_pane(
+        workspace: &mut Workspace,
+        preview: Entity<Self>,
+        pane: Entity<Pane>,
+        split: bool,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let editor = preview.read(cx).editor.clone();
+        Self::show_source(workspace, editor, pane, split, None, window, cx);
+    }
+
+    fn show_source(
+        workspace: &mut Workspace,
+        source: Entity<Editor>,
+        origin: Entity<Pane>,
+        split: bool,
+        range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let buffer = source.read(cx).buffer().read(cx).as_singleton();
+        let existing = workspace.panes().iter().find_map(|pane| {
+            pane.read(cx).items_of_type::<Editor>().find_map(|editor| {
+                (editor.read(cx).buffer().read(cx).as_singleton() == buffer)
+                    .then(|| (pane.clone(), editor))
+            })
+        });
+        let (pane, editor) = existing.unwrap_or_else(|| {
+            let pane = if split {
+                workspace.adjacent_pane_of(&origin, window, cx)
+            } else {
+                origin
+            };
+            (pane, source)
+        });
+        pane.update(cx, |pane, cx| {
+            if let Some(index) = pane.index_for_item(&editor) {
+                pane.activate_item(index, true, true, window, cx);
+            } else {
+                pane.add_item(Box::new(editor.clone()), true, true, None, window, cx);
+            }
+        });
+        editor.update(cx, |editor, cx| {
+            if let Some(range) = range {
+                editor.change_selections(
+                    SelectionEffects::scroll(Autoscroll::center()),
+                    window,
+                    cx,
+                    |selections| {
+                        selections.select_ranges([
+                            MultiBufferOffset(range.start)..MultiBufferOffset(range.end)
+                        ]);
+                    },
+                );
+            } else {
+                editor.request_autoscroll(Autoscroll::center(), cx);
+            }
+        });
+    }
+
     pub fn is_typst_file(editor: &Entity<Editor>, cx: &App) -> bool {
         let editor = editor.read(cx);
         let Some(buffer) = editor.buffer().read(cx).as_singleton() else {
@@ -190,7 +297,7 @@ impl TypstPreview {
         match Self::new(
             editor,
             project,
-            workspace_handle,
+            Some(workspace_handle),
             following,
             None,
             window,
@@ -208,7 +315,7 @@ impl TypstPreview {
     fn new(
         editor: Entity<Editor>,
         project: Entity<Project>,
-        workspace: WeakEntity<Workspace>,
+        workspace: Option<WeakEntity<Workspace>>,
         following: bool,
         restored: Option<ViewState>,
         window: &mut Window,
@@ -251,6 +358,7 @@ impl TypstPreview {
                 horizontal_scroll: ScrollHandle::new(),
                 _subscriptions: Vec::new(),
                 _editor_subscription: None,
+                _workspace_subscription: None,
                 _refresh: Task::ready(()),
             };
             view._subscriptions.push(cx.subscribe_in(
@@ -262,29 +370,8 @@ impl TypstPreview {
                     }
                 },
             ));
-            if let Some(workspace) = workspace.upgrade() {
-                view._subscriptions.push(cx.subscribe_in(
-                    &workspace,
-                    window,
-                    |view, workspace, event: &workspace::Event, window, cx| {
-                        if matches!(event, workspace::Event::ActiveItemChanged)
-                            && let Some(editor) = workspace
-                                .read(cx)
-                                .active_item(cx)
-                                .and_then(|item| item.downcast::<Editor>())
-                            && let Some(buffer) = editor.read(cx).buffer().read(cx).as_singleton()
-                            && view.project.read(cx).is_native_typst(&buffer, cx)
-                            && (view.state.following
-                                || view.editor.read(cx).buffer().read(cx).as_singleton()
-                                    == Some(buffer))
-                            && view.editor != editor
-                        {
-                            view.editor = editor;
-                            view.bind_editor(window, cx);
-                            view.request_compile(window, cx);
-                        }
-                    },
-                ));
+            if let Some(workspace) = workspace.clone() {
+                view.bind_workspace(workspace, window, cx);
             }
             view._subscriptions.push(cx.subscribe_in(
                 &project,
@@ -314,6 +401,39 @@ impl TypstPreview {
             view
         });
         Ok(view)
+    }
+
+    fn bind_workspace(
+        &mut self,
+        workspace: WeakEntity<Workspace>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace = Some(workspace.clone());
+        let Some(workspace) = workspace.upgrade() else {
+            return;
+        };
+        self._workspace_subscription = Some(cx.subscribe_in(
+            &workspace,
+            window,
+            |view, workspace, event: &workspace::Event, window, cx| {
+                if matches!(event, workspace::Event::ActiveItemChanged)
+                    && let Some(editor) = workspace
+                        .read(cx)
+                        .active_item(cx)
+                        .and_then(|item| item.downcast::<Editor>())
+                    && let Some(buffer) = editor.read(cx).buffer().read(cx).as_singleton()
+                    && view.project.read(cx).is_native_typst(&buffer, cx)
+                    && (view.state.following
+                        || view.editor.read(cx).buffer().read(cx).as_singleton() == Some(buffer))
+                    && view.editor != editor
+                {
+                    view.editor = editor;
+                    view.bind_editor(window, cx);
+                    view.request_compile(window, cx);
+                }
+            },
+        ));
     }
 
     fn bind_editor(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -653,7 +773,9 @@ impl TypstPreview {
             Navigation::Url(url) => cx.open_url(&url),
             Navigation::Source(location) => {
                 let project = self.project.clone();
-                let workspace = self.workspace.clone();
+                let Some(workspace) = self.workspace.clone() else {
+                    return;
+                };
                 let source = self.editor.clone();
                 let store = self.store.clone();
                 let entry = self.entry.clone();
@@ -676,30 +798,8 @@ impl TypstPreview {
                                 Editor::for_buffer(buffer, Some(project.clone()), window, cx)
                             })
                         };
-                        let pane = workspace
-                            .pane_for(&editor)
-                            .unwrap_or_else(|| workspace.active_pane().clone());
-                        pane.update(cx, |pane, cx| {
-                            if let Some(index) = pane.index_for_item(&editor) {
-                                pane.activate_item(index, true, true, window, cx);
-                            } else {
-                                pane.add_item(
-                                    Box::new(editor.clone()),
-                                    true,
-                                    true,
-                                    None,
-                                    window,
-                                    cx,
-                                );
-                            }
-                        });
-                        editor.update(cx, |editor, cx| {
-                            editor.change_selections(Default::default(), window, cx, |selections| {
-                                selections
-                                    .select_ranges([MultiBufferOffset(range.start)
-                                        ..MultiBufferOffset(range.end)])
-                            })
-                        });
+                        let pane = workspace.active_pane().clone();
+                        Self::show_source(workspace, editor, pane, false, Some(range), window, cx);
                     })?;
                     anyhow::Ok(())
                 })
@@ -795,6 +895,50 @@ impl Render for TypstPreview {
                     .gap_1()
                     .border_b_1()
                     .border_color(cx.theme().colors().border)
+                    .child(
+                        IconButton::new("edit-typst-source", IconName::Pencil)
+                            .icon_size(IconSize::Small)
+                            .style(ButtonStyle::Subtle)
+                            .tooltip(|_, cx| {
+                                let click = gpui::Keystroke {
+                                    key: "click".into(),
+                                    modifiers: gpui::Modifiers::alt(),
+                                    ..Default::default()
+                                };
+                                Tooltip::with_meta(
+                                    "Edit Typst source",
+                                    Some(&OpenSource),
+                                    format!(
+                                        "{} to open in a split",
+                                        text_for_keystroke(&click.modifiers, &click.key, cx)
+                                    ),
+                                    cx,
+                                )
+                            })
+                            .on_click({
+                                let workspace = self.workspace.clone();
+                                let preview = cx.entity();
+                                move |_, window, cx| {
+                                    let Some(workspace) =
+                                        workspace.as_ref().and_then(WeakEntity::upgrade)
+                                    else {
+                                        return;
+                                    };
+                                    workspace.update(cx, |workspace, cx| {
+                                        if let Some(pane) = workspace.pane_for(&preview) {
+                                            Self::open_source_in_pane(
+                                                workspace,
+                                                preview.clone(),
+                                                pane,
+                                                window.modifiers().alt,
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                    });
+                                }
+                            }),
+                    )
                     .child(
                         IconButton::new("previous-page", IconName::ChevronLeft)
                             .on_click(cx.listener(|view, _, _, cx| view.change_page(-1, cx))),
@@ -945,7 +1089,60 @@ impl Item for TypstPreview {
         )
         .into()
     }
-    fn to_item_events(_: &StateChanged, _: &mut dyn FnMut(ItemEvent)) {}
+    fn to_item_events(_: &StateChanged, notify: &mut dyn FnMut(ItemEvent)) {
+        notify(ItemEvent::UpdateTab);
+    }
+
+    fn added_to_workspace(
+        &mut self,
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.bind_workspace(workspace.weak_handle(), window, cx);
+    }
+
+    fn for_each_project_item(
+        &self,
+        cx: &App,
+        callback: &mut dyn FnMut(gpui::EntityId, &dyn project::ProjectItem),
+    ) {
+        if let Some(buffer) = self.editor.read(cx).buffer().read(cx).as_singleton() {
+            callback(buffer.entity_id(), buffer.read(cx));
+        }
+    }
+
+    fn buffer_kind(&self, _: &App) -> ItemBufferKind {
+        ItemBufferKind::Singleton
+    }
+
+    fn is_dirty(&self, cx: &App) -> bool {
+        self.editor.read(cx).is_dirty(cx)
+    }
+
+    fn can_save(&self, cx: &App) -> bool {
+        self.editor.read(cx).can_save(cx)
+    }
+
+    fn save(
+        &mut self,
+        options: SaveOptions,
+        project: Entity<Project>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        self.editor
+            .update(cx, |editor, cx| editor.save(options, project, window, cx))
+    }
+
+    fn reload(
+        &mut self,
+        _: Entity<Project>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        Task::ready(Ok(()))
+    }
 }
 
 impl SerializableItem for TypstPreview {
@@ -990,7 +1187,7 @@ impl SerializableItem for TypstPreview {
                 Self::new(
                     editor,
                     project,
-                    workspace,
+                    Some(workspace),
                     state.following,
                     Some(state),
                     window,
