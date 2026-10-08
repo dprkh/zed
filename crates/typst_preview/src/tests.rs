@@ -297,12 +297,7 @@ async fn preview_first_opening_and_source_navigation_center_the_editor(cx: &mut 
     );
     let close_source = workspace.update_in(cx, |workspace, window, cx| {
         workspace.pane_for(&editor).unwrap().update(cx, |pane, cx| {
-            pane.close_item_by_id(
-                editor.entity_id(),
-                workspace::SaveIntent::Skip,
-                window,
-                cx,
-            )
+            pane.close_item_by_id(editor.entity_id(), workspace::SaveIntent::Skip, window, cx)
         })
     });
     close_source.await.unwrap();

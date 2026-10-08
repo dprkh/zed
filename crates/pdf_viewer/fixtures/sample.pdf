@@ -1,0 +1,54 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Names << /Dests << /Names [(second) [4 0 R /XYZ 45 345 null]] >> >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 420 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R /Annots [8 0 R] >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R /Annots [9 0 R] >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Length 282 >>
+stream
+0.10 0.22 0.40 rg BT /F1 27 Tf 45 245 Td (Native PDF in Zed) Tj ET
+0 0 0 rg BT /F1 14 Tf 45 212 Td (Select text, copy it, and search every page.) Tj 0 -24 Td (PDF pages stay native, right beside your code.) Tj 0 -24 Td (Open the second page) Tj ET
+0.15 0.4 0.75 rg 45 77 330 45 re f
+endstream
+endobj
+7 0 obj
+<< /Length 182 >>
+stream
+BT /F1 26 Tf 45 345 Td (A second page) Tj ET BT /F1 14 Tf 45 310 Td (Searchable words: alpha beta alpha.) Tj 0 -24 Td (Visit the Zed website) Tj ET 0.1 0.55 0.3 rg 45 60 205 175 re f
+endstream
+endobj
+8 0 obj
+<< /Type /Annot /Subtype /Link /Rect [45 157 180 177] /Dest (second) >>
+endobj
+9 0 obj
+<< /Type /Annot /Subtype /Link /Rect [45 278 180 300] /A << /S /URI /URI (https://zed.dev) >> >>
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000133 00000 n 
+0000000196 00000 n 
+0000000338 00000 n 
+0000000480 00000 n 
+0000000550 00000 n 
+0000000883 00000 n 
+0000001116 00000 n 
+0000001203 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+1315
+%%EOF

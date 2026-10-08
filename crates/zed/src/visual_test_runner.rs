@@ -219,6 +219,7 @@ fn run_visual_tests(project_path: PathBuf, update_baseline: bool) -> Result<()> 
         outline_panel::init(cx);
         terminal_view::init(cx);
         image_viewer::init(cx);
+        pdf_viewer::init(cx);
         search::init(cx);
         lsp_locations::init(cx);
         cx.set_global(workspace::PaneSearchBarCallbacks {
@@ -383,6 +384,9 @@ fn run_visual_tests(project_path: PathBuf, update_baseline: bool) -> Result<()> 
 
     cx.run_until_parked();
 
+    if std::env::var_os("PDF_VISUAL_TEST_ONLY").is_some() {
+        return run_pdf_visual_tests(workspace_window, &mut cx, update_baseline);
+    }
     if std::env::var_os("TYPST_VISUAL_TEST_ONLY").is_some() {
         return run_typst_visual_tests(workspace_window, &mut cx, update_baseline);
     }
@@ -743,6 +747,37 @@ fn run_visual_test(
 
     // Capture the screenshot using direct texture capture
     let screenshot = cx.capture_screenshot(window)?;
+    if test_name.starts_with("pdf_selection_") || test_name.starts_with("pdf_find_") {
+        let highlighted = screenshot
+            .enumerate_pixels()
+            .filter(|(x, y, pixel)| {
+                if *y < 200 || *x > screenshot.width() * 4 / 5 {
+                    return false;
+                }
+                let [red, green, blue, _] = pixel.0;
+                if test_name.starts_with("pdf_selection_") {
+                    red > 100 && red < 230 && blue > red.saturating_add(30) && green > red
+                } else {
+                    red > 220 && green > 150 && blue < 190
+                }
+            })
+            .count();
+        anyhow::ensure!(
+            highlighted > 1000,
+            "PDF selection/search highlights were not painted in {test_name}"
+        );
+    }
+    if test_name.starts_with("pdf_pages_") {
+        let paper = screenshot
+            .enumerate_pixels()
+            .filter(|(x, y, pixel)| {
+                *y > 200
+                    && *x < screenshot.width() * 4 / 5
+                    && pixel.0[..3].iter().all(|channel| *channel > 245)
+            })
+            .count();
+        anyhow::ensure!(paper > 25_000, "PDF pages were not painted in {test_name}");
+    }
 
     // Get paths
     let baseline_path = get_baseline_path(test_name);
@@ -1237,7 +1272,148 @@ fn run_typst_visual_tests(
 }
 
 #[cfg(target_os = "macos")]
+fn run_pdf_visual_tests(
+    window: WindowHandle<Workspace>,
+    cx: &mut VisualTestAppContext,
+    update_baseline: bool,
+) -> Result<()> {
+    let workspace = window.update(cx, |_, _, cx| cx.entity())?;
+    let window: gpui::AnyWindowHandle = window.into();
+    cx.update_window(window, |_, window, cx| {
+        window.replace_root(cx, |window, cx| {
+            MultiWorkspace::new(workspace.clone(), window, cx)
+        });
+    })?;
+    let search_bar =
+        update_typst_visual_workspace(&workspace, window, cx, |workspace, window, cx| {
+            let toolbar = workspace.active_pane().read(cx).toolbar().clone();
+            let search_bar = cx.new(|cx| {
+                search::BufferSearchBar::new(
+                    Some(workspace.project().read(cx).languages().clone()),
+                    window,
+                    cx,
+                )
+            });
+            toolbar.update(cx, |toolbar, cx| {
+                toolbar.add_item(search_bar.clone(), window, cx)
+            });
+            search_bar
+        })?;
+    for (theme_name, appearance) in [("One Dark", "dark"), ("One Light", "light")] {
+        update_typst_visual_workspace(&workspace, window, cx, |_, _, cx| {
+            let theme = theme::ThemeRegistry::global(cx).get(theme_name)?;
+            theme::GlobalTheme::update_theme(cx, theme);
+            anyhow::Ok(())
+        })??;
+        for (filename, label) in [
+            ("sample.pdf", "pages"),
+            ("rotated.pdf", "rotation"),
+            ("password.pdf", "password"),
+        ] {
+            let loading =
+                update_typst_visual_workspace(&workspace, window, cx, |workspace, window, cx| {
+                    let worktree = workspace
+                        .project()
+                        .read(cx)
+                        .worktrees(cx)
+                        .next()
+                        .context("Missing PDF worktree")?;
+                    let path = project::ProjectPath {
+                        worktree_id: worktree.read(cx).id(),
+                        path: util::rel_path::rel_path(filename).into(),
+                    };
+                    anyhow::Ok(workspace.open_path(path, None, true, window, cx))
+                })??;
+            cx.background_executor.allow_parking();
+            let item = cx.foreground_executor.block_test(loading)?;
+            cx.background_executor.forbid_parking();
+            let view = item
+                .downcast::<pdf_viewer::PdfView>()
+                .context("PDF did not open in its native viewer")?;
+            update_typst_visual_workspace(&workspace, window, cx, |_, window, cx| {
+                search_bar.update(cx, |search, cx| {
+                    search.dismiss(&search::buffer_search::Dismiss, window, cx)
+                });
+                view.focus_handle(cx).focus(window, cx);
+                window.dispatch_action(pdf_viewer::FitWidth.boxed_clone(), cx);
+                window.dispatch_action(pdf_viewer::FirstPage.boxed_clone(), cx);
+            })?;
+            draw_typst_visual_frames(window, cx)?;
+            run_visual_test(
+                &format!("pdf_{label}_{appearance}"),
+                window,
+                cx,
+                update_baseline,
+            )?;
+            if filename == "sample.pdf" {
+                update_typst_visual_workspace(&workspace, window, cx, |_, window, cx| {
+                    view.focus_handle(cx).focus(window, cx);
+                    window.dispatch_action(pdf_viewer::FitPage.boxed_clone(), cx);
+                    window.dispatch_action(pdf_viewer::SelectAll.boxed_clone(), cx);
+                })?;
+                draw_typst_visual_frames(window, cx)?;
+                run_visual_test(
+                    &format!("pdf_selection_{appearance}"),
+                    window,
+                    cx,
+                    update_baseline,
+                )?;
+                update_typst_visual_workspace(&workspace, window, cx, |_, window, cx| {
+                    window.dispatch_action(pdf_viewer::ClearSelection.boxed_clone(), cx);
+                    window.dispatch_action(pdf_viewer::NextPage.boxed_clone(), cx);
+                    window.dispatch_action(pdf_viewer::ZoomIn.boxed_clone(), cx);
+                })?;
+                draw_typst_visual_frames(window, cx)?;
+                run_visual_test(
+                    &format!("pdf_zoom_{appearance}"),
+                    window,
+                    cx,
+                    update_baseline,
+                )?;
+                update_typst_visual_workspace(&workspace, window, cx, |_, window, cx| {
+                    window.dispatch_action(search::buffer_search::Deploy::find().boxed_clone(), cx);
+                })?;
+                let search =
+                    update_typst_visual_workspace(&workspace, window, cx, |_, window, cx| {
+                        search_bar.update(cx, |search, cx| {
+                            search.search("alpha", None, true, window, cx)
+                        })
+                    })?;
+                cx.background_executor.allow_parking();
+                cx.foreground_executor.block_test(search)?;
+                cx.background_executor.forbid_parking();
+                draw_typst_visual_frames(window, cx)?;
+                run_visual_test(
+                    &format!("pdf_find_{appearance}"),
+                    window,
+                    cx,
+                    update_baseline,
+                )?;
+            }
+        }
+    }
+    println!("Native PDF visual checks passed");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn create_test_files(project_path: &Path) {
+    for (name, bytes) in [
+        (
+            "sample.pdf",
+            include_bytes!("../../pdf_viewer/fixtures/sample.pdf").as_slice(),
+        ),
+        (
+            "rotated.pdf",
+            include_bytes!("../../pdf_viewer/fixtures/rotated.pdf").as_slice(),
+        ),
+        (
+            "password.pdf",
+            include_bytes!("../../pdf_viewer/fixtures/password.pdf").as_slice(),
+        ),
+    ] {
+        std::fs::write(project_path.join(name), bytes).expect("Failed to write PDF visual fixture");
+    }
     std::fs::write(
         project_path.join("main.typ"),
         r##"#set page(width: 150mm, height: 185mm, margin: 18mm)

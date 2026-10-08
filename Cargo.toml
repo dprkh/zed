@@ -161,6 +161,7 @@ members = [
     "crates/outline_panel",
     "crates/path",
     "crates/paths",
+    "crates/pdf_viewer",
     "crates/picker",
     "crates/picker_preview",
     "crates/platform_title_bar",
@@ -278,6 +279,8 @@ publish = false
 edition = "2024"
 
 [workspace.dependencies]
+hayro = { version = "=0.7.1" }
+kurbo = "0.13"
 #
 # Workspace member crates
 #
@@ -386,6 +389,7 @@ http_client_tls = { path = "crates/http_client_tls" }
 http_proxy = { path = "crates/http_proxy" }
 icons = { path = "crates/icons" }
 image_viewer = { path = "crates/image_viewer" }
+pdf_viewer = { path = "crates/pdf_viewer" }
 input_latency_ui = { path = "crates/input_latency_ui" }
 inspector_ui = { path = "crates/inspector_ui" }
 install_cli = { path = "crates/install_cli" }
