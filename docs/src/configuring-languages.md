@@ -100,7 +100,6 @@ Zed simplifies language server management for users:
 1. Automatic Download: When you open a file with a matching file type, Zed automatically downloads the appropriate language server. Zed may prompt you to install an extension for known file types.
 
 2. Storage Location:
-
    - macOS: `~/Library/Application Support/Zed/languages`
    - Linux: `$XDG_DATA_HOME/zed/languages`, `$FLATPAK_XDG_DATA_HOME/zed/languages`, or `$HOME/.local/share/zed/languages`
 
@@ -489,6 +488,11 @@ Inlay hints provide additional information inline in your code, such as paramete
   "show_other_hints": true
 }
 ```
+
+Hover a hint to see its tooltip, and double-click it to insert it into the code, if the language server provides the edits for that (for example, rust-analyzer's type hints).
+If a hint has a command, clicking it runs that command instead.
+
+{#action editor::AcceptInlayHint} inserts the first editable hint within the selection, one hint per invocation.
 
 For language-specific inlay hint settings, refer to the documentation for each language.
 
