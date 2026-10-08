@@ -7,6 +7,8 @@ description: Full Vim emulation in Zed with motions, text objects, visual mode, 
 
 Zed includes a Vim emulation layer. This page covers enabling and disabling vim mode, key bindings, Zed-specific features, and configuration options.
 
+`gg` jumps to the first line and places the cursor on its first nonblank character, following Vim's default behavior. A count such as `5gg` jumps to that line with the same cursor placement.
+
 ## Zed's vim mode design
 
 Vim mode replicates the behavior of motions and commands where it makes sense and uses Zed-specific functionality where Zed's approach is better. The goal is a familiar experience that works out of the box without requiring configuration.
@@ -203,7 +205,6 @@ These text objects implement the behavior of the [mini.ai](https://github.com/ec
 #### Choosing Between Approaches
 
 - Use **AnyQuotes/AnyBrackets** if you:
-
   - Prefer traditional Vim behavior
   - Want consistent character-based selection prioritizing innermost delimiters
   - Need behavior that closely matches vanilla Vim's text objects

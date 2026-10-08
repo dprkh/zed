@@ -1420,37 +1420,53 @@ mod test {
 
     #[gpui::test]
     async fn test_gg(cx: &mut gpui::TestAppContext) {
-        let mut cx = NeovimBackedTestContext::new(cx).await;
-        cx.simulate_at_each_offset(
-            "g g",
-            indoc! {"
-                The qˇuick
+        let mut cx = VimTestContext::new(cx, true).await;
+        for (keys, initial, expected) in [
+            ("g g", "First liˇne\nsecond", "ˇFirst line\nsecond"),
+            ("g g", "first\nsecond liˇne", "ˇfirst\nsecond line"),
+            ("g g", "    first\nsecond liˇne", "    ˇfirst\nsecond line"),
+            ("g g", "\t  first\nsecond liˇne", "\t  ˇfirst\nsecond line"),
+            ("g g", "\nsecond liˇne", "ˇ\nsecond line"),
+            ("g g", "    \nsecond liˇne", "   ˇ \nsecond line"),
+            ("g g", "\t  \nsecond liˇne", "\t ˇ \nsecond line"),
+            ("g g", " ˇ   ", "   ˇ "),
+            (
+                "g g",
+                "\u{a0} first\nsecond liˇne",
+                "ˇ\u{a0} first\nsecond line",
+            ),
+            ("g g", "    文\nsecond liˇne", "    ˇ文\nsecond line"),
+            (
+                "2 g g",
+                "first\n  second\nthird liˇne",
+                "first\n  ˇsecond\nthird line",
+            ),
+            (
+                "2 g g",
+                "first\n    \nthird liˇne",
+                "first\n   ˇ \nthird line",
+            ),
+            ("9 9 g g", "first liˇne\n  last", "first line\n  ˇlast"),
+            (
+                "v g g escape",
+                "    first\nsecond liˇne",
+                "    ˇfirst\nsecond line",
+            ),
+        ] {
+            cx.set_state(initial, Mode::Normal);
+            cx.simulate_keystrokes(keys);
+            cx.assert_state(expected, Mode::Normal);
+        }
+    }
 
-                brown fox jumps
-                over ˇthe laˇzy dog"},
-        )
-        .await
-        .assert_matches();
-        cx.simulate(
-            "g g",
-            indoc! {"
-
-
-                brown fox jumps
-                over the laˇzy dog"},
-        )
-        .await
-        .assert_matches();
-        cx.simulate(
-            "2 g g",
-            indoc! {"
-                ˇ
-
-                brown fox jumps
-                over the lazydog"},
-        )
-        .await
-        .assert_matches();
+    #[gpui::test]
+    async fn test_gg_preserves_jump_history(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.set_state("    first\nsecond liˇne", Mode::Normal);
+        cx.simulate_keystrokes("g g");
+        cx.assert_state("    ˇfirst\nsecond line", Mode::Normal);
+        cx.simulate_keystrokes("ctrl-o");
+        cx.assert_state("    first\nsecond liˇne", Mode::Normal);
     }
 
     #[gpui::test]

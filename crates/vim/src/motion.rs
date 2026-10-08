@@ -2359,21 +2359,26 @@ fn start_of_document(
     display_point: DisplayPoint,
     maybe_times: Option<usize>,
 ) -> DisplayPoint {
-    if let Some(times) = maybe_times {
-        return go_to_line(map, display_point, times);
+    let target = if let Some(times) = maybe_times {
+        go_to_line(map, display_point, times)
+    } else {
+        map.clip_point(DisplayPoint::zero(), Bias::Left)
+    };
+    let mut target_offset = start_of_line(map, false, target).to_offset(map, Bias::Left);
+
+    // Vim's 'startofline' skips only spaces and tabs, stopping on the last
+    // character when the entire line is blank.
+    for (character, offset) in map.buffer_chars_at(target_offset) {
+        if character == '\n' {
+            break;
+        }
+        target_offset = offset;
+        if !matches!(character, ' ' | '\t') {
+            break;
+        }
     }
 
-    let point = map.display_point_to_point(display_point, Bias::Left);
-    let mut first_point = Point::zero();
-    first_point.column = point.column;
-
-    map.clip_point(
-        map.point_to_display_point(
-            map.buffer_snapshot().clip_point(first_point, Bias::Left),
-            Bias::Left,
-        ),
-        Bias::Left,
-    )
+    map.clip_point(target_offset.to_display_point(map), Bias::Left)
 }
 
 fn end_of_document(
