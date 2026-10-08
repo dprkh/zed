@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export CARGO_INCREMENTAL=0
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+
+# Build dependencies must use matching debug settings to avoid compiling them twice.
+exec cargo \
+    --config profile.dev.debug=0 \
+    --config 'profile.dev.split-debuginfo="off"' \
+    --config profile.dev.build-override.debug=0 \
+    --config 'profile.dev.build-override.split-debuginfo="off"' \
+    --config profile.release.debug=0 \
+    --config 'profile.release.strip="symbols"' \
+    --config profile.release.build-override.debug=0 \
+    "$@"
